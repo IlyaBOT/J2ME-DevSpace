@@ -5,27 +5,68 @@
       "id": "temurin-jdk8",
       "type": "jdk",
       "version": "8u492-b09",
-      "source": "adoptium-api",
-      "notes": "Use Adoptium API v3 to resolve OS/arch-specific archive."
+      "label": "Temurin JDK 8",
+      "source": "github-releases",
+      "default": true,
+      "url_template": "https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u492-b09/{archive}",
+      "mirror_url_template": "https://ibifs.ddns.net/%D0%9F%D1%80%D0%BE%D1%87%D0%B5%D0%B5/j2me-devspace/sdk/{archive}",
+      "archive": "OpenJDK8U-jdk_{arch}_{os}_hotspot_8u492b09",
+      "notes": "Stable Eclipse Temurin GitHub release asset."
     },
     {
       "id": "apache-ant",
       "type": "ant",
       "version": "1.10.16",
-      "source": "apache-ant-binary-dist"
+      "label": "Apache Ant",
+      "source": "apache-archive",
+      "default": true,
+      "url": "https://archive.apache.org/dist/ant/binaries/apache-ant-1.10.16-bin.zip",
+      "mirror_url": "https://ibifs.ddns.net/%D0%9F%D1%80%D0%BE%D1%87%D0%B5%D0%B5/j2me-devspace/sdk/apache-ant-1.10.16-bin.zip",
+      "archive": "apache-ant-1.10.16-bin.zip"
     },
     {
       "id": "proguard",
       "type": "proguard",
       "version": "7.9.1",
-      "source": "github-releases"
+      "label": "ProGuard",
+      "source": "github-releases",
+      "default": true,
+      "url": "https://github.com/Guardsquare/proguard/releases/download/v7.9.1/proguard-7.9.1.zip",
+      "mirror_url": "https://ibifs.ddns.net/%D0%9F%D1%80%D0%BE%D1%87%D0%B5%D0%B5/j2me-devspace/sdk/proguard-7.9.1.zip",
+      "archive": "proguard-7.9.1.zip"
     },
     {
       "id": "sun-wtk",
       "type": "wtk",
       "version": "2.5.2_01",
+      "label": "Sun Java Wireless Toolkit",
       "source": "manual-oracle-archive",
-      "notes": "Old Oracle license/archive flow may require manual download."
+      "default": true,
+      "manual": true,
+      "manual_url": "https://www.oracle.com/java/technologies/sun-java-wireless-toolkit.html",
+      "notes": "Oracle archive may require manual download and license acceptance. Put extracted WTK into sdk/wtk/2.5.2_01 and point sdk/wtk/current to it."
+    },
+    {
+      "id": "microemulator",
+      "type": "emulator",
+      "version": "2.0.4",
+      "label": "MicroEmulator",
+      "source": "sourceforge",
+      "default": true,
+      "url": "https://sourceforge.net/projects/microemulator/files/microemulator/2.0.4/microemulator-2.0.4.zip/download",
+      "mirror_url": "https://ibifs.ddns.net/%D0%9F%D1%80%D0%BE%D1%87%D0%B5%D0%B5/j2me-devspace/emulators/microemulator-2.0.4.zip",
+      "archive": "microemulator-2.0.4.zip",
+      "notes": "Standalone Java ME emulator. Installed into emulators/microemulator/."
+    },
+    {
+      "id": "freej2me-plus",
+      "type": "emulator",
+      "version": "manual",
+      "label": "FreeJ2ME-Plus",
+      "source": "manual-github",
+      "manual": true,
+      "manual_url": "https://github.com/TASEmulators/freej2me-plus",
+      "notes": "No stable direct jar release URL is listed in this package index. Put freej2me.jar into emulators/freej2me-plus/freej2me.jar."
     }
   ]
 }

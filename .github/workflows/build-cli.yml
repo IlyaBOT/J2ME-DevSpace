@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: ${{ matrix.name }}
@@ -19,7 +22,7 @@ jobs:
             os: macos-26-intel
             artifact_name: j2me-devspace-macos-x64
           - name: Windows x64
-            os: windows-latest
+            os: windows-2025
             artifact_name: j2me-devspace-windows-x64
 
     runs-on: ${{ matrix.os }}
@@ -89,7 +92,7 @@ jobs:
           cp "$binary" "$package_dir/"
           chmod +x "$package_dir"/j2me* 2>/dev/null || true
 
-          cp README.md LICENSE j2me.devspace.yml "$package_dir/"
+          cp README.md j2me.devspace.yml "$package_dir/"
           cp -R templates "$package_dir/templates"
           cp -R completions "$package_dir/completions"
 

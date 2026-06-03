@@ -59,7 +59,7 @@ cmake --build build --config Release
 Install system-wide:
 
 ```bash
-sudo cmake --install build --config Release
+sudo cmake --install build --config release
 j2me --version
 ```
 
@@ -317,6 +317,23 @@ j2me --build MyGame --profile lg-gs290 --jdk 8u492 --run-after-build
 j2me --emulator setup
 j2me --run MyGame
 ```
+
+## SDK Setup
+
+`j2me --sdk setup` is an interactive installer. It reads `packages/index.example.json`, asks which package/version to install, shows an installation plan, then downloads and extracts supported packages into:
+
+```text
+sdk/jdk/<version>/
+sdk/ant/<version>/
+sdk/proguard/<version>/
+sdk/wtk/<version>/
+```
+
+It also updates `sdk/<type>/current` to point at the selected version. Some legacy packages, such as Sun WTK 2.5.2_01, may require manual download/license acceptance from Oracle and are shown as manual install steps instead of being silently treated as installed.
+
+`j2me --emulator setup` uses the same package index for emulator setup. MicroEmulator can be downloaded automatically into `emulators/microemulator/`; FreeJ2ME-Plus is listed as a manual option unless a direct `freej2me.jar` release URL is added to the package index.
+
+Package entries may define `mirror_url` or `mirror_url_template`. If the primary download fails, the installer prints a yellow warning and retries from the j2me-devspace developer mirror.
 
 ## Config files
 

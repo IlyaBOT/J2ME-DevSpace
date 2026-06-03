@@ -2,7 +2,7 @@ schema: j2me.devspace/1
 name: J2ME DevSpace
 id: j2me-devspace
 cli: j2me
-version: 0.1
+version: 0.2
 channel: beta
 codename: Vector
 description: Portable CLI environment and workspace manager for Java ME / J2ME MIDP projects.

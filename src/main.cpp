@@ -41,6 +41,23 @@ struct AppMeta {
     std::string defaultProfile = "lg-gs290";
 };
 
+struct PackageOption {
+    std::string id;
+    std::string type;
+    std::string version;
+    std::string label;
+    std::string source;
+    std::string url;
+    std::string urlTemplate;
+    std::string mirrorUrl;
+    std::string mirrorUrlTemplate;
+    std::string archive;
+    std::string manualUrl;
+    std::string notes;
+    bool selectedByDefault = false;
+    bool manual = false;
+};
+
 static std::string readAll(const fs::path &p) {
     std::ifstream f(p, std::ios::binary);
     if (!f) return "";
@@ -64,6 +81,10 @@ static std::string trim(std::string s) {
 
 static bool hasArg(const std::vector<std::string> &args, const std::string &a) {
     return std::find(args.begin(), args.end(), a) != args.end();
+}
+
+static bool endsWith(const std::string &s, const std::string &suffix) {
+    return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
 static std::string argAfter(const std::vector<std::string> &args, const std::string &a, const std::string &fallback = "") {
@@ -359,6 +380,13 @@ static std::string shellQuote(const fs::path &p) {
     return shellQuote(p.string());
 }
 
+static std::string powershellQuote(const std::string &s) {
+    std::string out = "'";
+    for (char c : s) out += (c == '\'' ? "''" : std::string(1, c));
+    out += "'";
+    return out;
+}
+
 static int runCommand(const std::string &cmd) {
     std::cout << "> " << cmd << "\n";
     int status = std::system(cmd.c_str());
@@ -370,6 +398,308 @@ static int runCommand(const std::string &cmd) {
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return status;
 #endif
+}
+
+static bool copyDirIfExists(const fs::path &from, const fs::path &to);
+
+static std::string hostOsToken() {
+#ifdef _WIN32
+    return "windows";
+#elif __APPLE__
+    return "mac";
+#else
+    return "linux";
+#endif
+}
+
+static std::string hostArchToken() {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return "aarch64";
+#elif defined(__x86_64__) || defined(_M_X64)
+    return "x64";
+#elif defined(__i386__) || defined(_M_IX86)
+    return "x86";
+#else
+    return "x64";
+#endif
+}
+
+static std::string replaceAll(std::string s, const std::string &from, const std::string &to) {
+    size_t pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos) {
+        s.replace(pos, from.size(), to);
+        pos += to.size();
+    }
+    return s;
+}
+
+static std::string expandPackageUrl(std::string url) {
+    url = replaceAll(url, "{os}", hostOsToken());
+    url = replaceAll(url, "{arch}", hostArchToken());
+    return url;
+}
+
+static std::vector<PackageOption> readPackageIndex(const fs::path &ws) {
+    std::vector<PackageOption> out;
+    json idx = readJsonFile(ws / "packages" / "index.example.json");
+    if (!idx.is_object() || jstr(idx, "schema") != "j2me.packages/1" || !idx.contains("packages") || !idx.at("packages").is_array()) {
+        return out;
+    }
+    for (const auto &p : idx.at("packages")) {
+        if (!p.is_object()) continue;
+        PackageOption opt;
+        opt.id = jstr(p, "id");
+        opt.type = jstr(p, "type");
+        opt.version = jstr(p, "version");
+        opt.label = jstr(p, "label", opt.id);
+        opt.source = jstr(p, "source");
+        opt.url = jstr(p, "url");
+        opt.urlTemplate = jstr(p, "url_template");
+        opt.mirrorUrl = jstr(p, "mirror_url");
+        opt.mirrorUrlTemplate = jstr(p, "mirror_url_template");
+        opt.archive = jstr(p, "archive");
+        opt.manualUrl = jstr(p, "manual_url");
+        opt.notes = jstr(p, "notes");
+        opt.selectedByDefault = p.contains("default") && p.at("default").is_boolean() && p.at("default").get<bool>();
+        opt.manual = p.contains("manual") && p.at("manual").is_boolean() && p.at("manual").get<bool>();
+        if (!opt.id.empty() && !opt.type.empty() && !opt.version.empty()) out.push_back(opt);
+    }
+    return out;
+}
+
+static std::vector<PackageOption> packagesByType(const std::vector<PackageOption> &all, const std::string &type) {
+    std::vector<PackageOption> out;
+    for (const auto &p : all) if (p.type == type) out.push_back(p);
+    return out;
+}
+
+static std::string packageDisplayName(const PackageOption &p) {
+    return p.id + "-" + p.version;
+}
+
+static bool dirHasFiles(const fs::path &dir) {
+    if (!fs::exists(dir) || !fs::is_directory(dir)) return false;
+    return fs::directory_iterator(dir) != fs::directory_iterator();
+}
+
+static fs::path singleExtractedRoot(const fs::path &dir) {
+    fs::path only;
+    size_t count = 0;
+    if (!fs::exists(dir)) return {};
+    for (const auto &e : fs::directory_iterator(dir)) {
+        if (!e.is_directory()) continue;
+        only = e.path();
+        ++count;
+    }
+    return count == 1 ? only : dir;
+}
+
+static int installCurrentLink(const fs::path &base, const fs::path &versionDir) {
+    fs::path cur = base / "current";
+    std::error_code ec;
+    fs::remove_all(cur, ec);
+    fs::create_directory_symlink(versionDir.filename(), cur, ec);
+    if (!ec) return 0;
+    ec.clear();
+    copyDirIfExists(versionDir, cur);
+    return fs::exists(cur) ? 0 : 2;
+}
+
+static int downloadFile(const std::string &url, const fs::path &dest) {
+    fs::create_directories(dest.parent_path());
+#ifdef _WIN32
+    std::string cmd = "curl.exe -L --fail --retry 3 -o " + shellQuote(dest) + " " + shellQuote(url);
+#else
+    std::string cmd = "curl -L --fail --retry 3 -o " + shellQuote(dest) + " " + shellQuote(url);
+#endif
+    return runCommand(cmd);
+}
+
+static int downloadFileWithMirror(const std::string &url, const std::string &mirrorUrl, const fs::path &dest) {
+    int rc = downloadFile(url, dest);
+    if (rc == 0 || mirrorUrl.empty()) return rc;
+
+    std::cerr << "\033[33mWarning: download from URL " << url
+              << " failed, retrying from j2me-devspace developer mirror.\033[0m\n";
+    return downloadFile(mirrorUrl, dest);
+}
+
+static int extractArchivePortable(const fs::path &archive, const fs::path &dest) {
+    fs::create_directories(dest);
+    std::string archiveName = archive.filename().string();
+    int rc = 2;
+#ifdef _WIN32
+    rc = runCommand("tar -xf " + shellQuote(archive) + " -C " + shellQuote(dest));
+    if (rc == 0) return 0;
+    if (endsWith(archiveName, ".zip")) {
+        rc = runCommand("powershell -NoProfile -ExecutionPolicy Bypass -Command \"Expand-Archive -LiteralPath " + powershellQuote(archive.string()) + " -DestinationPath " + powershellQuote(dest.string()) + " -Force\"");
+        if (rc == 0) return 0;
+    }
+#else
+    if (endsWith(archiveName, ".zip")) {
+        rc = runCommand("unzip -q " + shellQuote(archive) + " -d " + shellQuote(dest));
+        if (rc == 0) return 0;
+    } else {
+        rc = runCommand("tar -xf " + shellQuote(archive) + " -C " + shellQuote(dest));
+        if (rc == 0) return 0;
+    }
+#endif
+    return runCommand("cd " + shellQuote(dest) + " && cmake -E tar xf " + shellQuote(archive));
+}
+
+static int installPackage(const fs::path &ws, const PackageOption &pkg) {
+    fs::path base = ws / "sdk" / pkg.type;
+    fs::path dest = base / pkg.version;
+    fs::create_directories(base);
+
+    if (pkg.manual) {
+        std::cout << "\nManual package: " << packageDisplayName(pkg) << "\n";
+        if (!pkg.manualUrl.empty()) std::cout << "Download: " << pkg.manualUrl << "\n";
+        if (!pkg.notes.empty()) std::cout << pkg.notes << "\n";
+        std::cout << "Expected directory: " << dest << "\n";
+        return 0;
+    }
+
+    if (dirHasFiles(dest)) {
+        std::cout << packageDisplayName(pkg) << " already has files: " << dest << "\n";
+        std::cout << "Reinstall? [y/N]: ";
+        std::string answer;
+        std::getline(std::cin, answer);
+        if (trim(answer) != "y" && trim(answer) != "Y") {
+            installCurrentLink(base, dest);
+            return 0;
+        }
+        std::error_code ec;
+        fs::remove_all(dest, ec);
+    }
+
+    std::string archiveName = pkg.archive.empty() ? packageDisplayName(pkg) : expandPackageUrl(pkg.archive);
+    if (archiveName.find('.') == std::string::npos) {
+#ifdef _WIN32
+        archiveName += ".zip";
+#else
+        archiveName += ".tar.gz";
+#endif
+    }
+    std::string url = expandPackageUrl(!pkg.url.empty() ? pkg.url : pkg.urlTemplate);
+    url = replaceAll(url, "{archive}", archiveName);
+    if (url.empty()) {
+        std::cerr << "No download URL for " << packageDisplayName(pkg) << "\n";
+        return 2;
+    }
+    std::string mirrorUrl = expandPackageUrl(!pkg.mirrorUrl.empty() ? pkg.mirrorUrl : pkg.mirrorUrlTemplate);
+    mirrorUrl = replaceAll(mirrorUrl, "{archive}", archiveName);
+    fs::path archivePath = ws / "cache" / archiveName;
+    fs::path extractDir = ws / "temp" / ("extract-" + pkg.id + "-" + pkg.version);
+    std::error_code ec;
+    fs::remove_all(extractDir, ec);
+
+    std::cout << "\nDownloading " << packageDisplayName(pkg) << "\n";
+    std::cout << "URL: " << url << "\n";
+    if (!mirrorUrl.empty()) std::cout << "Mirror: " << mirrorUrl << "\n";
+    if (int rc = downloadFileWithMirror(url, mirrorUrl, archivePath)) return rc;
+
+    std::cout << "Extracting to " << dest << "\n";
+    if (int rc = extractArchivePortable(archivePath, extractDir)) return rc;
+
+    fs::path root = singleExtractedRoot(extractDir);
+    if (root.empty() || !fs::exists(root)) {
+        std::cerr << "Archive extraction produced no installable directory.\n";
+        return 2;
+    }
+    fs::create_directories(dest.parent_path());
+    fs::rename(root, dest, ec);
+    if (ec) {
+        ec.clear();
+        fs::create_directories(dest, ec);
+        if (!copyDirIfExists(root, dest)) {
+            std::cerr << "Failed to install extracted package into " << dest << "\n";
+            return 2;
+        }
+    }
+    fs::remove_all(extractDir, ec);
+    writeJsonFile(dest / "j2me.package.json", json{
+        {"schema", "j2me.package/1"},
+        {"id", pkg.id},
+        {"type", pkg.type},
+        {"version", pkg.version},
+        {"source", pkg.source},
+        {"url", url}
+    });
+    installCurrentLink(base, dest);
+    std::cout << "Installed: " << dest << "\n";
+    return 0;
+}
+
+static int installEmulatorPackage(const fs::path &ws, const PackageOption &pkg) {
+    fs::path dest = ws / "emulators" / pkg.id;
+    fs::create_directories(dest.parent_path());
+
+    if (pkg.manual) {
+        std::cout << "\nManual emulator: " << packageDisplayName(pkg) << "\n";
+        if (!pkg.manualUrl.empty()) std::cout << "Download: " << pkg.manualUrl << "\n";
+        if (!pkg.notes.empty()) std::cout << pkg.notes << "\n";
+        std::cout << "Expected directory: " << dest << "\n";
+        return 0;
+    }
+
+    if (dirHasFiles(dest)) {
+        std::cout << packageDisplayName(pkg) << " already has files: " << dest << "\n";
+        std::cout << "Reinstall? [y/N]: ";
+        std::string answer;
+        std::getline(std::cin, answer);
+        if (trim(answer) != "y" && trim(answer) != "Y") return 0;
+        std::error_code ec;
+        fs::remove_all(dest, ec);
+    }
+
+    std::string url = expandPackageUrl(!pkg.url.empty() ? pkg.url : pkg.urlTemplate);
+    if (url.empty()) {
+        std::cerr << "No download URL for " << packageDisplayName(pkg) << "\n";
+        return 2;
+    }
+
+    std::string archiveName = pkg.archive.empty() ? packageDisplayName(pkg) + ".zip" : expandPackageUrl(pkg.archive);
+    std::string mirrorUrl = expandPackageUrl(!pkg.mirrorUrl.empty() ? pkg.mirrorUrl : pkg.mirrorUrlTemplate);
+    mirrorUrl = replaceAll(mirrorUrl, "{archive}", archiveName);
+    fs::path archivePath = ws / "cache" / archiveName;
+    fs::path extractDir = ws / "temp" / ("extract-" + pkg.id + "-" + pkg.version);
+    std::error_code ec;
+    fs::remove_all(extractDir, ec);
+
+    std::cout << "\nDownloading " << packageDisplayName(pkg) << "\n";
+    std::cout << "URL: " << url << "\n";
+    if (!mirrorUrl.empty()) std::cout << "Mirror: " << mirrorUrl << "\n";
+    if (int rc = downloadFileWithMirror(url, mirrorUrl, archivePath)) return rc;
+
+    std::cout << "Extracting to " << dest << "\n";
+    if (int rc = extractArchivePortable(archivePath, extractDir)) return rc;
+
+    fs::path root = singleExtractedRoot(extractDir);
+    if (root.empty() || !fs::exists(root)) {
+        std::cerr << "Archive extraction produced no installable directory.\n";
+        return 2;
+    }
+    fs::rename(root, dest, ec);
+    if (ec) {
+        ec.clear();
+        fs::create_directories(dest, ec);
+        if (!copyDirIfExists(root, dest)) {
+            std::cerr << "Failed to install extracted emulator into " << dest << "\n";
+            return 2;
+        }
+    }
+    fs::remove_all(extractDir, ec);
+    writeJsonFile(dest / "j2me.package.json", json{
+        {"schema", "j2me.package/1"},
+        {"id", pkg.id},
+        {"type", pkg.type},
+        {"version", pkg.version},
+        {"source", pkg.source},
+        {"url", url}
+    });
+    std::cout << "Installed: " << dest << "\n";
+    return 0;
 }
 
 static bool copyDirIfExists(const fs::path &from, const fs::path &to) {
@@ -886,12 +1216,117 @@ static int sdkSetup(const fs::path &ws) {
     fs::create_directories(ws / "sdk" / "wtk");
     fs::create_directories(ws / "sdk" / "ant");
     fs::create_directories(ws / "sdk" / "proguard");
-    std::cout << "SDK package directories are ready in workspace:\n"
-              << "  sdk/jdk/<version>/\n"
-              << "  sdk/wtk/<version>/\n"
-              << "  sdk/ant/<version>/\n"
-              << "  sdk/proguard/<version>/\n\n"
-              << "Use symlink/copy named 'current' inside each package type for default build tools.\n";
+
+    std::vector<PackageOption> all = readPackageIndex(ws);
+    if (all.empty()) {
+        std::cerr << "Package index not found or invalid: " << (ws / "packages" / "index.example.json") << "\n";
+        return 2;
+    }
+
+    std::cout << "J2ME DevSpace SDK Setup Tool.\n"
+              << "Select needed SDK and versions.\n"
+              << "Input: Enter = default, number = select, 0 = skip, b = previous, q = cancel.\n\n";
+
+    std::vector<std::string> steps = {"jdk", "ant", "proguard", "wtk"};
+    std::map<std::string, PackageOption> selected;
+    size_t step = 0;
+    while (step < steps.size()) {
+        std::string type = steps[step];
+        auto opts = packagesByType(all, type);
+        if (opts.empty()) { ++step; continue; }
+
+        size_t def = 0;
+        for (size_t i = 0; i < opts.size(); ++i) {
+            if (opts[i].selectedByDefault) { def = i; break; }
+        }
+
+        std::cout << "\n";
+        if (type == "jdk") std::cout << "Java Development Kit (JDK):\n";
+        else if (type == "ant") std::cout << "Apache Ant:\n";
+        else if (type == "proguard") std::cout << "ProGuard:\n";
+        else if (type == "wtk") std::cout << "Sun Java Wireless Toolkit:\n";
+        else std::cout << type << ":\n";
+
+        std::cout << "  0) skip\n";
+        for (size_t i = 0; i < opts.size(); ++i) {
+            std::cout << "  " << (i + 1) << ") "
+                      << (i == def ? "[*] " : "[ ] ")
+                      << opts[i].id << "-" << opts[i].version;
+            if (opts[i].manual) std::cout << " (manual)";
+            std::cout << "\n";
+            if (!opts[i].notes.empty()) std::cout << "      " << opts[i].notes << "\n";
+        }
+        std::cout << "Select: ";
+
+        std::string input;
+        std::getline(std::cin, input);
+        input = trim(input);
+        if (input == "q" || input == "Q") {
+            std::cout << "Cancelled.\n";
+            return 0;
+        }
+        if (input == "b" || input == "B") {
+            if (step == 0) {
+                std::cout << "Cancelled.\n";
+                return 0;
+            }
+            selected.erase(steps[step - 1]);
+            --step;
+            continue;
+        }
+        if (input == "0") {
+            selected.erase(type);
+            ++step;
+            continue;
+        }
+
+        size_t choice = def;
+        if (!input.empty()) {
+            try {
+                int n = std::stoi(input);
+                if (n < 1 || static_cast<size_t>(n) > opts.size()) {
+                    std::cout << "Invalid selection.\n";
+                    continue;
+                }
+                choice = static_cast<size_t>(n - 1);
+            } catch (const std::exception &) {
+                std::cout << "Invalid selection.\n";
+                continue;
+            }
+        }
+        selected[type] = opts[choice];
+        ++step;
+    }
+
+    if (selected.empty()) {
+        std::cout << "No SDK packages selected.\n";
+        return 0;
+    }
+
+    std::cout << "\nInstallation plan:\n";
+    for (const auto &type : steps) {
+        auto it = selected.find(type);
+        if (it == selected.end()) continue;
+        const auto &p = it->second;
+        std::cout << "  " << p.type << ": " << packageDisplayName(p);
+        if (p.manual) std::cout << " (manual)";
+        std::cout << "\n";
+    }
+    std::cout << "Continue? [y/N]: ";
+    std::string yes;
+    std::getline(std::cin, yes);
+    yes = trim(yes);
+    if (yes != "y" && yes != "Y") {
+        std::cout << "Cancelled.\n";
+        return 0;
+    }
+
+    for (const auto &type : steps) {
+        auto it = selected.find(type);
+        if (it == selected.end()) continue;
+        if (int rc = installPackage(ws, it->second)) return rc;
+    }
+    std::cout << "\nSDK setup finished.\n";
     return 0;
 }
 
@@ -1157,11 +1592,71 @@ static int buildProject(const fs::path &ws, const AppMeta &meta, const std::stri
 static int emulatorSetup(const fs::path &ws) {
     fs::create_directories(ws / "emulators" / "freej2me-plus");
     fs::create_directories(ws / "emulators" / "microemulator");
-    std::cout << "Recommended emulator layout inside workspace:\n"
-              << "  emulators/freej2me-plus/freej2me.jar\n"
-              << "  emulators/microemulator/microemulator.jar\n\n"
-              << "Default run order: FreeJ2ME-Plus AWT -> MicroEmulator -> WTK emulator.\n"
-              << "Put downloaded jars there, then use: j2me --run <project>.\n";
+
+    std::vector<PackageOption> all = readPackageIndex(ws);
+    auto opts = packagesByType(all, "emulator");
+    if (opts.empty()) {
+        std::cerr << "No emulator packages found in " << (ws / "packages" / "index.example.json") << "\n";
+        return 2;
+    }
+
+    size_t def = 0;
+    for (size_t i = 0; i < opts.size(); ++i) {
+        if (opts[i].selectedByDefault) { def = i; break; }
+    }
+
+    std::cout << "J2ME DevSpace Emulator Setup Tool.\n"
+              << "Default run order: FreeJ2ME-Plus AWT -> MicroEmulator -> WTK emulator.\n\n"
+              << "Select emulator to install:\n"
+              << "  0) skip\n";
+    for (size_t i = 0; i < opts.size(); ++i) {
+        std::cout << "  " << (i + 1) << ") "
+                  << (i == def ? "[*] " : "[ ] ")
+                  << opts[i].id << "-" << opts[i].version;
+        if (opts[i].manual) std::cout << " (manual)";
+        std::cout << "\n";
+        if (!opts[i].notes.empty()) std::cout << "      " << opts[i].notes << "\n";
+    }
+    std::cout << "Select: ";
+
+    std::string input;
+    std::getline(std::cin, input);
+    input = trim(input);
+    if (input == "q" || input == "Q" || input == "0") {
+        std::cout << "Cancelled.\n";
+        return 0;
+    }
+
+    size_t choice = def;
+    if (!input.empty()) {
+        try {
+            int n = std::stoi(input);
+            if (n < 1 || static_cast<size_t>(n) > opts.size()) {
+                std::cerr << "Invalid emulator selection.\n";
+                return 2;
+            }
+            choice = static_cast<size_t>(n - 1);
+        } catch (const std::exception &) {
+            std::cerr << "Invalid emulator selection.\n";
+            return 2;
+        }
+    }
+
+    const auto &pkg = opts[choice];
+    std::cout << "\nInstallation plan:\n"
+              << "  emulator: " << packageDisplayName(pkg);
+    if (pkg.manual) std::cout << " (manual)";
+    std::cout << "\nContinue? [y/N]: ";
+    std::string yes;
+    std::getline(std::cin, yes);
+    yes = trim(yes);
+    if (yes != "y" && yes != "Y") {
+        std::cout << "Cancelled.\n";
+        return 0;
+    }
+
+    if (int rc = installEmulatorPackage(ws, pkg)) return rc;
+    std::cout << "\nEmulator setup finished.\n";
     return 0;
 }
 
