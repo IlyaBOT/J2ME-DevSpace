@@ -1,0 +1,100 @@
+name: Build CLI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-latest
+            artifact_name: j2me-devspace-linux-x64
+          - name: macOS x64
+            os: macos-26-intel
+            artifact_name: j2me-devspace-macos-x64
+          - name: Windows x64
+            os: windows-latest
+            artifact_name: j2me-devspace-windows-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          for candidate in \
+            bin/j2me \
+            bin/Release/j2me \
+            bin/j2me.exe \
+            bin/Release/j2me.exe
+          do
+            if [ -f "$candidate" ]; then
+              "$candidate" --version
+              exit 0
+            fi
+          done
+          echo "j2me binary was not found" >&2
+          find bin -maxdepth 3 -type f -print || true
+          exit 1
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package="${{ matrix.artifact_name }}"
+          package_dir="dist/$package"
+          mkdir -p "$package_dir"
+
+          binary=""
+          for candidate in \
+            bin/j2me \
+            bin/Release/j2me \
+            bin/j2me.exe \
+            bin/Release/j2me.exe
+          do
+            if [ -f "$candidate" ]; then
+              binary="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$binary" ]; then
+            echo "j2me binary was not found" >&2
+            exit 1
+          fi
+
+          cp "$binary" "$package_dir/"
+          chmod +x "$package_dir"/j2me* 2>/dev/null || true
+
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md j2me.devspace.yml "$package_dir/"
+          cp -R templates "$package_dir/templates"
+
+          (
+            cd dist
+            cmake -E tar cf "$package.zip" --format=zip "$package"
+          )
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}.zip
+          if-no-files-found: error
+          retention-days: 30
