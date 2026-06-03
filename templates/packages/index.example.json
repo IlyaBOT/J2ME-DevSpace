@@ -1,0 +1,31 @@
+{
+  "schema": "j2me.packages/1",
+  "packages": [
+    {
+      "id": "temurin-jdk8",
+      "type": "jdk",
+      "version": "8u492-b09",
+      "source": "adoptium-api",
+      "notes": "Use Adoptium API v3 to resolve OS/arch-specific archive."
+    },
+    {
+      "id": "apache-ant",
+      "type": "ant",
+      "version": "1.10.16",
+      "source": "apache-ant-binary-dist"
+    },
+    {
+      "id": "proguard",
+      "type": "proguard",
+      "version": "7.9.1",
+      "source": "github-releases"
+    },
+    {
+      "id": "sun-wtk",
+      "type": "wtk",
+      "version": "2.5.2_01",
+      "source": "manual-oracle-archive",
+      "notes": "Old Oracle license/archive flow may require manual download."
+    }
+  ]
+}

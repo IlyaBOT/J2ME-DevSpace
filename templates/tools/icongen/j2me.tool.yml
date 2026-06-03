@@ -1,0 +1,6 @@
+name: icongen
+version: 0.1.0
+author: IlyaBOT / Vega
+description: Generate J2ME icon pack from high-resolution PNG/JPG source.
+github: ""
+entry: main.py

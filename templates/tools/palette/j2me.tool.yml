@@ -1,0 +1,6 @@
+name: palette
+version: 0.1.0
+author: IlyaBOT / Vega
+description: Reduce image colors for slow old J2ME phones, with optional dithering.
+github: ""
+entry: main.py

@@ -1,0 +1,14 @@
+{
+  "schema": "j2me.profile/1",
+  "name": "lg-gs290",
+  "device_name": "LG GS290 Cookie Fresh",
+  "screen_width": 240,
+  "screen_height": 400,
+  "touch": true,
+  "midp": "2.1",
+  "cldc": "1.1",
+  "heap_mb": 4,
+  "jar_size_limit_kb": 1024,
+  "emulator": "freej2me-plus",
+  "wtk_device": "DefaultColorPhone"
+}

@@ -1,0 +1,6 @@
+name: checkpkg
+version: 0.1.0
+author: IlyaBOT / Vega
+description: Check JAR/JAD basics before copying to a phone.
+github: ""
+entry: main.py

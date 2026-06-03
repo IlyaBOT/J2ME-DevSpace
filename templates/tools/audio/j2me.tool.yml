@@ -1,0 +1,6 @@
+name: audio
+version: 0.1.0
+author: IlyaBOT / Vega
+description: Convert music and SFX to J2ME-friendly formats through FFmpeg.
+github: ""
+entry: main.py

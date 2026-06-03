@@ -1,0 +1,1094 @@
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdlib>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+#include <yaml-cpp/yaml.h>
+
+namespace fs = std::filesystem;
+using json = nlohmann::json;
+
+#ifndef J2ME_CLI_VERSION
+#define J2ME_CLI_VERSION NULL
+#endif
+
+struct AppMeta {
+    std::string name = "J2ME DevSpace";
+    std::string id = "j2me-devspace";
+    std::string cli = "j2me";
+    std::string version = J2ME_CLI_VERSION;
+    std::string channel = "beta";
+    std::string codename = "Vector";
+    std::string defaultProfile = "lg-gs290";
+};
+
+static std::string readAll(const fs::path &p) {
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return "";
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+static void writeAll(const fs::path &p, const std::string &s) {
+    if (p.has_parent_path()) fs::create_directories(p.parent_path());
+    std::ofstream f(p, std::ios::binary);
+    f << s;
+}
+
+static std::string trim(std::string s) {
+    auto notSpace = [](unsigned char c){ return !std::isspace(c); };
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), notSpace));
+    s.erase(std::find_if(s.rbegin(), s.rend(), notSpace).base(), s.end());
+    return s;
+}
+
+static bool hasArg(const std::vector<std::string> &args, const std::string &a) {
+    return std::find(args.begin(), args.end(), a) != args.end();
+}
+
+static std::string argAfter(const std::vector<std::string> &args, const std::string &a, const std::string &fallback = "") {
+    for (size_t i = 0; i + 1 < args.size(); ++i) if (args[i] == a) return args[i + 1];
+    return fallback;
+}
+
+static json parseJsonText(const std::string &text, json fallback = json::object()) {
+    if (trim(text).empty()) return fallback;
+    try {
+        return json::parse(text);
+    } catch (const std::exception &) {
+        return fallback;
+    }
+}
+
+static json readJsonFile(const fs::path &p, json fallback = json::object()) {
+    return parseJsonText(readAll(p), fallback);
+}
+
+static void writeJsonFile(const fs::path &p, const json &j) {
+    writeAll(p, j.dump(2) + "\n");
+}
+
+static std::string jstr(const json &j, const std::string &key, const std::string &fallback = "") {
+    if (!j.is_object() || !j.contains(key) || !j.at(key).is_string()) return fallback;
+    return j.at(key).get<std::string>();
+}
+
+static int jint(const json &j, const std::string &key, int fallback = 0) {
+    if (!j.is_object() || !j.contains(key) || !j.at(key).is_number_integer()) return fallback;
+    return j.at(key).get<int>();
+}
+
+static std::string jsonString(const std::string &jsonText, const std::string &key, const std::string &fallback = "") {
+    return jstr(parseJsonText(jsonText), key, fallback);
+}
+
+static int jsonInt(const std::string &jsonText, const std::string &key, int fallback = 0) {
+    return jint(parseJsonText(jsonText), key, fallback);
+}
+
+static std::vector<std::string> jsonArrayStrings(const std::string &jsonText, const std::string &key) {
+    std::vector<std::string> out;
+    json j = parseJsonText(jsonText);
+    if (!j.is_object() || !j.contains(key) || !j.at(key).is_array()) return out;
+    for (const auto &item : j.at(key)) {
+        if (item.is_string()) out.push_back(item.get<std::string>());
+    }
+    return out;
+}
+
+static std::vector<std::string> jsonArrayStrings(const json &j, const std::string &key) {
+    std::vector<std::string> out;
+    if (!j.is_object() || !j.contains(key) || !j.at(key).is_array()) return out;
+    for (const auto &item : j.at(key)) {
+        if (item.is_string()) out.push_back(item.get<std::string>());
+    }
+    return out;
+}
+
+static std::string javaStringEscape(const std::string &s) {
+    std::ostringstream o;
+    for (char c : s) {
+        switch (c) {
+            case '"': o << "\\\""; break;
+            case '\\': o << "\\\\"; break;
+            case '\n': o << "\\n"; break;
+            case '\r': o << "\\r"; break;
+            case '\t': o << "\\t"; break;
+            default: o << c; break;
+        }
+    }
+    return o.str();
+}
+
+static std::string nowIsoLocal() {
+    std::time_t t = std::time(nullptr);
+    std::tm tmv;
+#ifdef _WIN32
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmv);
+    return std::string(buf);
+}
+
+static bool startsWithPath(fs::path child, fs::path parent) {
+    child = fs::weakly_canonical(child);
+    parent = fs::weakly_canonical(parent);
+    auto c = child.begin();
+    auto p = parent.begin();
+    for (; p != parent.end(); ++p, ++c) {
+        if (c == child.end() || *c != *p) return false;
+    }
+    return true;
+}
+
+static fs::path absPath(const fs::path &p) {
+    std::error_code ec;
+    fs::path a = fs::absolute(p, ec);
+    if (ec) return p;
+    return a.lexically_normal();
+}
+
+static fs::path findToolHome(const char *argv0) {
+    if (const char *env = std::getenv("J2ME_DEVSPACE_HOME")) {
+        fs::path p = absPath(env);
+        if (fs::exists(p / "j2me.devspace.yml")) return p;
+    }
+
+    fs::path exe = argv0 ? fs::path(argv0) : fs::path();
+    if (!exe.empty()) {
+        if (exe.is_relative()) exe = fs::current_path() / exe;
+        exe = absPath(exe);
+        fs::path dir = exe.parent_path();
+        std::vector<fs::path> candidates = {
+            dir,
+            dir.parent_path(),
+            dir.parent_path().parent_path(),
+            fs::current_path(),
+            fs::current_path().parent_path()
+        };
+        for (const auto &c : candidates) {
+            if (!c.empty() && fs::exists(c / "j2me.devspace.yml")) return absPath(c);
+        }
+    }
+    return absPath(fs::current_path());
+}
+
+static std::string yamlScalar(const YAML::Node &n, const std::string &key, const std::string &fallback = "") {
+    try {
+        if (n && n[key] && n[key].IsScalar()) return n[key].as<std::string>();
+    } catch (const std::exception &) {}
+    return fallback;
+}
+
+static AppMeta loadAppMeta(const fs::path &toolHome) {
+    AppMeta m;
+    fs::path metaPath = toolHome / "j2me.devspace.yml";
+    if (!fs::exists(metaPath)) return m;
+
+    try {
+        YAML::Node y = YAML::LoadFile(metaPath.string());
+        m.name = yamlScalar(y, "name", m.name);
+        m.id = yamlScalar(y, "id", m.id);
+        m.cli = yamlScalar(y, "cli", m.cli);
+        m.version = yamlScalar(y, "version", m.version);
+        m.channel = yamlScalar(y, "channel", m.channel);
+        m.codename = yamlScalar(y, "codename", m.codename);
+        m.defaultProfile = yamlScalar(y, "default_profile", m.defaultProfile);
+    } catch (const std::exception &e) {
+        std::cerr << "Warning: failed to read " << metaPath << ": " << e.what() << "\n";
+    }
+    return m;
+}
+
+static std::string formatAppVersion(const AppMeta &m) {
+    std::ostringstream out;
+    out << m.name << " " << m.version;
+    if (!m.channel.empty()) out << "-" << m.channel;
+    if (!m.codename.empty()) out << " (" << m.codename << ")";
+    return out.str();
+}
+
+static fs::path findWorkspaceRoot() {
+    if (const char *env = std::getenv("J2ME_WORKSPACE")) {
+        fs::path p = absPath(env);
+        json marker = readJsonFile(p / "j2me.workspace.json");
+        if (jstr(marker, "schema") == "j2me.workspace/1") return p;
+    }
+    fs::path p = absPath(fs::current_path());
+    for (;;) {
+        fs::path markerPath = p / "j2me.workspace.json";
+        if (fs::exists(markerPath)) {
+            json marker = readJsonFile(markerPath);
+            if (jstr(marker, "schema") == "j2me.workspace/1") return p;
+        }
+        if (!p.has_parent_path() || p == p.parent_path()) break;
+        p = p.parent_path();
+    }
+    return {};
+}
+
+static int requireWorkspace(const fs::path &ws) {
+    if (!ws.empty()) return 0;
+    std::cerr << "J2ME workspace not found in current directory tree.\n"
+              << "Create one first, then cd into it:\n"
+              << "  j2me --workspace setup <directory>\n"
+              << "  cd <directory>\n";
+    return 2;
+}
+
+static std::string shellQuote(const std::string &s) {
+#ifdef _WIN32
+    std::string out = "\"";
+    for (char c : s) out += (c == '"' ? "\\\"" : std::string(1, c));
+    out += "\"";
+    return out;
+#else
+    std::string out = "'";
+    for (char c : s) out += (c == '\'' ? "'\\''" : std::string(1, c));
+    out += "'";
+    return out;
+#endif
+}
+
+static std::string shellQuote(const fs::path &p) {
+    return shellQuote(p.string());
+}
+
+static int runCommand(const std::string &cmd) {
+    std::cout << "> " << cmd << "\n";
+    return std::system(cmd.c_str());
+}
+
+static bool copyDirIfExists(const fs::path &from, const fs::path &to) {
+    std::error_code ec;
+    if (!fs::exists(from)) return false;
+    fs::create_directories(to, ec);
+    for (auto &entry : fs::recursive_directory_iterator(from)) {
+        auto rel = fs::relative(entry.path(), from, ec);
+        if (ec) continue;
+        auto dest = to / rel;
+        if (entry.is_directory()) {
+            fs::create_directories(dest, ec);
+        } else if (entry.is_regular_file()) {
+            fs::create_directories(dest.parent_path(), ec);
+            fs::copy_file(entry.path(), dest, fs::copy_options::overwrite_existing, ec);
+        }
+    }
+    return true;
+}
+
+static std::map<std::string, std::string> readToolYml(const fs::path &p) {
+    std::map<std::string, std::string> m;
+    try {
+        YAML::Node y = YAML::LoadFile(p.string());
+        for (const auto &item : y) {
+            if (item.first.IsScalar() && item.second.IsScalar()) {
+                m[item.first.as<std::string>()] = item.second.as<std::string>();
+            }
+        }
+    } catch (const std::exception &e) {
+        m["_error"] = e.what();
+    }
+    return m;
+}
+
+static std::string safeIdent(std::string s) {
+    if (s.empty()) return "app";
+    for (char &c : s) if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') c = '_';
+    if (std::isdigit(static_cast<unsigned char>(s[0]))) s = "app_" + s;
+    return s;
+}
+
+static std::string packageFromClass(const std::string &fqcn) {
+    auto pos = fqcn.rfind('.');
+    if (pos == std::string::npos) return "";
+    return fqcn.substr(0, pos);
+}
+
+static fs::path packagePath(const fs::path &base, const std::string &pkg) {
+    fs::path p = base;
+    std::stringstream ss(pkg);
+    std::string part;
+    while (std::getline(ss, part, '.')) if (!part.empty()) p /= part;
+    return p;
+}
+
+static std::vector<std::string> workspaceOwnedDirs() {
+    return {"projects", "sdk", "emulators", "tools", "profiles", "packages", "cache", "temp", "docs"};
+}
+
+static json defaultWorkspaceJson(const AppMeta &meta) {
+    return json{
+        {"schema", "j2me.workspace/1"},
+        {"name", "J2ME DevSpace Workspace"},
+        {"created_at", nowIsoLocal()},
+        {"created_by", {
+            {"name", meta.name},
+            {"version", meta.version},
+            {"channel", meta.channel},
+            {"codename", meta.codename}
+        }},
+        {"default_profile", meta.defaultProfile},
+        {"dirs", {
+            {"projects", "projects"},
+            {"sdk", "sdk"},
+            {"emulators", "emulators"},
+            {"tools", "tools"},
+            {"profiles", "profiles"},
+            {"packages", "packages"},
+            {"cache", "cache"},
+            {"temp", "temp"},
+            {"docs", "docs"}
+        }}
+    };
+}
+
+static json defaultProjectJson(const std::string &name, const std::string &defaultProfile) {
+    std::string ident = safeIdent(name);
+    return json{
+        {"schema", "j2me.proj/1"},
+        {"name", name},
+        {"midlet_name", name},
+        {"midlet_class", "com.ilyabot." + ident + ".MainMIDlet"},
+        {"version", "0.1.0"},
+        {"vendor", "IlyaBOT"},
+        {"jar_name", name + ".jar"},
+        {"icon", "/icons/icon32.png"},
+        {"permissions", json::array({"javax.microedition.io.Connector.http"})},
+        {"default_profile", defaultProfile}
+    };
+}
+
+static json defaultProfileJson() {
+    return json{
+        {"schema", "j2me.profile/1"},
+        {"name", "lg-gs290"},
+        {"device_name", "LG GS290 Cookie Fresh"},
+        {"screen_width", 240},
+        {"screen_height", 400},
+        {"touch", true},
+        {"midp", "2.1"},
+        {"cldc", "1.1"},
+        {"heap_mb", 4},
+        {"jar_size_limit_kb", 1024},
+        {"emulator", "freej2me-plus"},
+        {"wtk_device", "DefaultColorPhone"}
+    };
+}
+
+static void cmdHelp(const AppMeta &meta) {
+    std::cout << formatAppVersion(meta) << "\n"
+              << "CLI: " << meta.cli << "\n\n"
+              << "Usage:\n"
+              << "  j2me --version | -V\n"
+              << "  j2me --workspace setup [DIR]\n"
+              << "  j2me --workspace remove [DIR] [--yes]\n"
+              << "  j2me --workspace info\n"
+              << "  j2me --project create <NAME> | -P create <NAME>\n"
+              << "  j2me --project remove <NAME>\n"
+              << "  j2me --project list\n"
+              << "  j2me --project properties <NAME>\n"
+              << "  j2me --sdk setup | --sdk list | -S list\n"
+              << "  j2me --tools list | -T list\n"
+              << "  j2me --tools <NAME> [args...] | -T <NAME> [args...]\n"
+              << "  j2me --tools update [NAME]\n"
+              << "  j2me --build [PROJECT] [--profile NAME] [--jdk VERSION] [--run-after-build]\n"
+              << "  j2me --emulator setup\n"
+              << "  j2me --run [PROJECT] [--profile NAME]\n\n"
+              << "Most commands require a workspace. Create one with: j2me --workspace setup <DIR>\n";
+}
+
+static int workspaceSetup(const fs::path &toolHome, const AppMeta &meta, const fs::path &targetArg) {
+    fs::path target = targetArg.empty() ? fs::current_path() : targetArg;
+    target = absPath(target);
+    fs::create_directories(target);
+
+    fs::path marker = target / "j2me.workspace.json";
+    if (fs::exists(marker)) {
+        json old = readJsonFile(marker);
+        if (jstr(old, "schema") == "j2me.workspace/1") {
+            std::cout << "Workspace already exists: " << target << "\n";
+        } else {
+            std::cerr << "Refusing to overwrite foreign j2me.workspace.json in " << target << "\n";
+            return 2;
+        }
+    } else {
+        writeJsonFile(marker, defaultWorkspaceJson(meta));
+    }
+
+    for (const auto &d : workspaceOwnedDirs()) fs::create_directories(target / d);
+    fs::create_directories(target / "sdk" / "jdk");
+    fs::create_directories(target / "sdk" / "wtk");
+    fs::create_directories(target / "sdk" / "ant");
+    fs::create_directories(target / "sdk" / "proguard");
+    fs::create_directories(target / "emulators" / "freej2me-plus");
+    fs::create_directories(target / "emulators" / "microemulator");
+
+    copyDirIfExists(toolHome / "templates" / "tools", target / "tools");
+    copyDirIfExists(toolHome / "templates" / "profiles", target / "profiles");
+    copyDirIfExists(toolHome / "templates" / "packages", target / "packages");
+    if (fs::exists(toolHome / "templates" / "README.workspace.md")) {
+        fs::copy_file(toolHome / "templates" / "README.workspace.md", target / "README.workspace.md", fs::copy_options::overwrite_existing);
+    }
+    if (!fs::exists(target / "profiles" / "lg-gs290.json")) {
+        writeJsonFile(target / "profiles" / "lg-gs290.json", defaultProfileJson());
+    }
+
+    std::cout << "Workspace ready: " << target << "\n";
+    std::cout << "Next:\n  cd " << target << "\n  j2me --workspace info\n";
+    return 0;
+}
+
+static int workspaceRemove(const fs::path &targetArg, bool yes) {
+    fs::path target = targetArg.empty() ? fs::current_path() : targetArg;
+    target = absPath(target);
+    fs::path marker = target / "j2me.workspace.json";
+    if (!fs::exists(marker) || jstr(readJsonFile(marker), "schema") != "j2me.workspace/1") {
+        std::cerr << "Not a J2ME DevSpace workspace: " << target << "\n";
+        std::cerr << "Refusing to delete anything without j2me.workspace.json marker.\n";
+        return 2;
+    }
+
+    std::cout << "This will remove only J2ME DevSpace-owned content from:\n  " << target << "\n";
+    std::cout << "Directories/files:\n";
+    for (const auto &d : workspaceOwnedDirs()) std::cout << "  " << d << "/\n";
+    std::cout << "  j2me.workspace.json\n  README.workspace.md\n";
+    if (!yes) {
+        std::cout << "Type YES to continue: ";
+        std::string ok;
+        std::getline(std::cin, ok);
+        if (ok != "YES") { std::cout << "Cancelled.\n"; return 0; }
+    }
+    for (const auto &d : workspaceOwnedDirs()) fs::remove_all(target / d);
+    fs::remove(target / "j2me.workspace.json");
+    fs::remove(target / "README.workspace.md");
+    std::cout << "Workspace content removed. Other files in the directory were left untouched.\n";
+    return 0;
+}
+
+static size_t countProjectDirs(const fs::path &ws) {
+    size_t count = 0;
+    fs::path dir = ws / "projects";
+    if (!fs::exists(dir)) return 0;
+    for (auto &e : fs::directory_iterator(dir)) {
+        if (e.is_directory() && fs::exists(e.path() / "j2me.proj.json")) ++count;
+    }
+    return count;
+}
+
+static void listSubdirsCompact(const fs::path &dir) {
+    if (!fs::exists(dir)) { std::cout << "none"; return; }
+    bool any = false;
+    for (auto &e : fs::directory_iterator(dir)) {
+        if (e.is_directory() || fs::is_symlink(e.path())) {
+            if (any) std::cout << ", ";
+            std::cout << e.path().filename().string();
+            any = true;
+        }
+    }
+    if (!any) std::cout << "none";
+}
+
+static int workspaceInfo(const fs::path &ws) {
+    if (int rc = requireWorkspace(ws)) return rc;
+    json marker = readJsonFile(ws / "j2me.workspace.json");
+    std::cout << "Workspace: " << ws << "\n";
+    std::cout << "Name: " << jstr(marker, "name", "J2ME DevSpace Workspace") << "\n";
+    std::cout << "Created: " << jstr(marker, "created_at", "unknown") << "\n";
+    std::cout << "Default profile: " << jstr(marker, "default_profile", "lg-gs290") << "\n";
+    std::cout << "Projects: " << countProjectDirs(ws) << "\n";
+
+    std::cout << "\nSDK packages:\n";
+    std::cout << "  JDK: "; listSubdirsCompact(ws / "sdk" / "jdk"); std::cout << "\n";
+    std::cout << "  WTK/JavaME: "; listSubdirsCompact(ws / "sdk" / "wtk"); std::cout << "\n";
+    std::cout << "  Ant: "; listSubdirsCompact(ws / "sdk" / "ant"); std::cout << "\n";
+    std::cout << "  ProGuard: "; listSubdirsCompact(ws / "sdk" / "proguard"); std::cout << "\n";
+
+    std::cout << "\nEmulators:\n";
+    std::cout << "  FreeJ2ME-Plus: " << (fs::exists(ws / "emulators" / "freej2me-plus" / "freej2me.jar") ? "configured" : "not configured") << "\n";
+    std::cout << "  MicroEmulator: " << (fs::exists(ws / "emulators" / "microemulator" / "microemulator.jar") ? "configured" : "not configured") << "\n";
+
+    std::cout << "\nProfile files: ";
+    if (fs::exists(ws / "profiles")) {
+        bool first = true;
+        for (auto &e : fs::directory_iterator(ws / "profiles")) {
+            if (e.path().extension() == ".json") {
+                if (!first) std::cout << ", ";
+                std::cout << e.path().stem().string();
+                first = false;
+            }
+        }
+        if (first) std::cout << "none";
+        std::cout << "\n";
+    } else {
+        std::cout << "none\n";
+    }
+
+    std::cout << "\nTools:\n";
+    fs::path tools = ws / "tools";
+    if (!fs::exists(tools)) { std::cout << "  none\n"; return 0; }
+    bool any = false;
+    for (auto &e : fs::directory_iterator(tools)) {
+        if (!e.is_directory()) continue;
+        fs::path meta = e.path() / "j2me.tool.yml";
+        if (!fs::exists(meta)) continue;
+        auto y = readToolYml(meta);
+        std::cout << "  " << e.path().filename().string();
+        if (y.count("version")) std::cout << " " << y["version"];
+        if (y.count("description")) std::cout << " - " << y["description"];
+        if (y.count("_error")) std::cout << " - YAML error: " << y["_error"];
+        std::cout << "\n";
+        any = true;
+    }
+    if (!any) std::cout << "  none\n";
+    return 0;
+}
+
+static fs::path currentProjectDir(const fs::path &ws) {
+    fs::path p = absPath(fs::current_path());
+    if (!startsWithPath(p, ws)) return {};
+    for (;;) {
+        if (fs::exists(p / "j2me.proj.json")) return p;
+        if (p == ws || !p.has_parent_path() || p == p.parent_path()) break;
+        p = p.parent_path();
+    }
+    return {};
+}
+
+static fs::path resolveProject(const fs::path &ws, const std::string &name) {
+    if (!name.empty()) return ws / "projects" / name;
+    fs::path cur = currentProjectDir(ws);
+    if (!cur.empty()) return cur;
+    return {};
+}
+
+static int projectCreate(const fs::path &ws, const std::string &name) {
+    fs::path p = ws / "projects" / name;
+    if (fs::exists(p)) { std::cerr << "Project already exists: " << p << "\n"; return 2; }
+    json wsjson = readJsonFile(ws / "j2me.workspace.json");
+    std::string defaultProfile = jstr(wsjson, "default_profile", "lg-gs290");
+    std::string ident = safeIdent(name);
+    fs::create_directories(p / "src" / "com" / "ilyabot" / ident);
+    fs::create_directories(p / "res" / "icons");
+    fs::create_directories(p / "build");
+    fs::create_directories(p / "dist");
+
+    writeJsonFile(p / "j2me.proj.json", defaultProjectJson(name, defaultProfile));
+    fs::path globalProfile = ws / "profiles" / (defaultProfile + ".json");
+    if (fs::exists(globalProfile)) {
+        fs::copy_file(globalProfile, p / ("j2me.profile-" + defaultProfile + ".json"), fs::copy_options::overwrite_existing);
+    } else {
+        writeJsonFile(p / ("j2me.profile-" + defaultProfile + ".json"), defaultProfileJson());
+    }
+
+    std::string java = "package com.ilyabot." + ident + ";\n\n"
+        "import javax.microedition.midlet.*;\n"
+        "import javax.microedition.lcdui.*;\n\n"
+        "public class MainMIDlet extends MIDlet implements CommandListener {\n"
+        "    private Display display;\n"
+        "    private final Command exitCommand = new Command(\"Exit\", Command.EXIT, 0);\n\n"
+        "    public void startApp() {\n"
+        "        display = Display.getDisplay(this);\n"
+        "        Form form = new Form(\"" + name + "\");\n"
+        "        form.append(\"Hello from J2ME DevSpace. Default profile: " + defaultProfile + ".\");\n"
+        "        form.addCommand(exitCommand);\n"
+        "        form.setCommandListener(this);\n"
+        "        display.setCurrent(form);\n"
+        "    }\n\n"
+        "    public void pauseApp() {}\n\n"
+        "    public void destroyApp(boolean unconditional) {}\n\n"
+        "    public void commandAction(Command c, Displayable d) {\n"
+        "        if (c == exitCommand) notifyDestroyed();\n"
+        "    }\n"
+        "}\n";
+    writeAll(p / "src" / "com" / "ilyabot" / ident / "MainMIDlet.java", java);
+
+    std::cout << "Created project: " << p << "\n";
+    return 0;
+}
+
+static int projectList(const fs::path &ws) {
+    fs::path dir = ws / "projects";
+    if (!fs::exists(dir)) { std::cout << "No projects directory.\n"; return 0; }
+    bool any = false;
+    for (auto &e : fs::directory_iterator(dir)) {
+        if (e.is_directory() && fs::exists(e.path() / "j2me.proj.json")) {
+            std::cout << e.path().filename().string() << "\n";
+            any = true;
+        }
+    }
+    if (!any) std::cout << "No projects.\n";
+    return 0;
+}
+
+static int projectRemove(const fs::path &ws, const std::string &name) {
+    fs::path p = ws / "projects" / name;
+    if (!fs::exists(p / "j2me.proj.json")) { std::cerr << "Project not found: " << name << "\n"; return 2; }
+    std::cout << "Remove " << p << " ? Type YES: ";
+    std::string ok;
+    std::getline(std::cin, ok);
+    if (ok != "YES") { std::cout << "Cancelled.\n"; return 0; }
+    fs::remove_all(p);
+    std::cout << "Removed.\n";
+    return 0;
+}
+
+static int projectProperties(const fs::path &ws, const std::string &name) {
+    fs::path p = ws / "projects" / name / "j2me.proj.json";
+    if (!fs::exists(p)) { std::cerr << "Project not found: " << name << "\n"; return 2; }
+    json j = readJsonFile(p);
+    std::map<std::string, std::string> vals;
+    vals["name"] = jstr(j, "name", name);
+    vals["midlet_name"] = jstr(j, "midlet_name", name);
+    vals["midlet_class"] = jstr(j, "midlet_class", "com.ilyabot." + safeIdent(name) + ".MainMIDlet");
+    vals["version"] = jstr(j, "version", "0.1.0");
+    vals["vendor"] = jstr(j, "vendor", "IlyaBOT");
+    vals["jar_name"] = jstr(j, "jar_name", name + ".jar");
+    vals["icon"] = jstr(j, "icon", "/icons/icon32.png");
+    vals["default_profile"] = jstr(j, "default_profile", "lg-gs290");
+
+    for (auto &kv : vals) {
+        std::cout << kv.first << " [" << kv.second << "]: ";
+        std::string v;
+        std::getline(std::cin, v);
+        if (!trim(v).empty()) kv.second = trim(v);
+    }
+
+    auto perms = jsonArrayStrings(j, "permissions");
+    std::cout << "permissions comma-separated [";
+    for (size_t i=0;i<perms.size();++i) std::cout << (i?",":"") << perms[i];
+    std::cout << "]: ";
+    std::string ps;
+    std::getline(std::cin, ps);
+    if (!trim(ps).empty()) {
+        perms.clear();
+        std::stringstream ss(ps);
+        std::string item;
+        while (std::getline(ss, item, ',')) perms.push_back(trim(item));
+    }
+
+    json out;
+    out["schema"] = "j2me.proj/1";
+    out["name"] = vals["name"];
+    out["midlet_name"] = vals["midlet_name"];
+    out["midlet_class"] = vals["midlet_class"];
+    out["version"] = vals["version"];
+    out["vendor"] = vals["vendor"];
+    out["jar_name"] = vals["jar_name"];
+    out["icon"] = vals["icon"];
+    out["permissions"] = perms;
+    out["default_profile"] = vals["default_profile"];
+    writeJsonFile(p, out);
+    std::cout << "Updated " << p << "\n";
+    return 0;
+}
+
+static int sdkList(const fs::path &ws) {
+    fs::path sdk = ws / "sdk";
+    std::cout << "SDK directory: " << sdk << "\n";
+    for (auto sub : {"jdk", "wtk", "ant", "proguard"}) {
+        fs::path d = sdk / sub;
+        std::cout << "\n[" << sub << "]\n";
+        if (!fs::exists(d)) { std::cout << "  not installed\n"; continue; }
+        bool any = false;
+        for (auto &e: fs::directory_iterator(d)) {
+            if (e.is_directory() || fs::is_symlink(e.path())) {
+                std::cout << "  " << e.path().filename().string() << "\n";
+                any = true;
+            }
+        }
+        if (!any) std::cout << "  none\n";
+    }
+    return 0;
+}
+
+static int sdkSetup(const fs::path &ws) {
+    fs::create_directories(ws / "sdk" / "jdk");
+    fs::create_directories(ws / "sdk" / "wtk");
+    fs::create_directories(ws / "sdk" / "ant");
+    fs::create_directories(ws / "sdk" / "proguard");
+    std::cout << "SDK package directories are ready in workspace:\n"
+              << "  sdk/jdk/<version>/\n"
+              << "  sdk/wtk/<version>/\n"
+              << "  sdk/ant/<version>/\n"
+              << "  sdk/proguard/<version>/\n\n"
+              << "Use symlink/copy named 'current' inside each package type for default build tools.\n";
+    return 0;
+}
+
+static int toolsList(const fs::path &ws) {
+    fs::path tools = ws / "tools";
+    if (!fs::exists(tools)) { std::cout << "No tools directory.\n"; return 0; }
+    bool any = false;
+    for (auto &e : fs::directory_iterator(tools)) {
+        if (!e.is_directory()) continue;
+        fs::path meta = e.path() / "j2me.tool.yml";
+        if (!fs::exists(meta)) continue;
+        auto y = readToolYml(meta);
+        std::cout << e.path().filename().string();
+        if (y.count("version")) std::cout << " " << y["version"];
+        if (y.count("description")) std::cout << " - " << y["description"];
+        if (y.count("_error")) std::cout << " - YAML error: " << y["_error"];
+        std::cout << "\n";
+        any = true;
+    }
+    if (!any) std::cout << "No tools.\n";
+    return 0;
+}
+
+static int toolRun(const fs::path &ws, const std::string &name, const std::vector<std::string> &extra) {
+    if (name == "update") {
+        std::cout << "Tool auto-update skeleton is present. Real updater must download GitHub release archive, backup old tool to tools/<name>/temp, then verify j2me.tool.yml version.\n";
+        return 0;
+    }
+    fs::path main = ws / "tools" / name / "main.py";
+    if (!fs::exists(main)) { std::cerr << "Tool not found in workspace: " << name << "\n"; return 2; }
+#ifdef _WIN32
+    std::string py = "python";
+#else
+    std::string py = "python3";
+#endif
+    std::string cmd = py + " " + shellQuote(main);
+    for (const auto &a : extra) cmd += " " + shellQuote(a);
+    return runCommand(cmd);
+}
+
+static std::vector<std::string> profilesInProject(const fs::path &p) {
+    std::vector<std::string> out;
+    if (!fs::exists(p)) return out;
+    for (auto &e : fs::directory_iterator(p)) {
+        std::string fn = e.path().filename().string();
+        const std::string prefix = "j2me.profile-";
+        const std::string suffix = ".json";
+        if (fn.rfind(prefix, 0) == 0 && fn.size() > prefix.size() + suffix.size()) {
+            out.push_back(fn.substr(prefix.size(), fn.size() - prefix.size() - suffix.size()));
+        }
+    }
+    return out;
+}
+
+static std::string pickProfile(const fs::path &p, const std::string &requested) {
+    if (!requested.empty()) return requested;
+    auto profs = profilesInProject(p);
+    if (profs.empty()) return "";
+    if (profs.size() == 1) return profs[0];
+    std::cout << "Found multiple j2me project profiles:\n";
+    for (auto &x : profs) std::cout << "  " << x << "\n";
+    std::cout << "Profile: ";
+    std::string x;
+    std::getline(std::cin, x);
+    return trim(x);
+}
+
+static std::string manifestFrom(const std::string &projText, const std::string &profileText, const AppMeta &meta, const std::string &buildDate) {
+    json proj = parseJsonText(projText);
+    json profile = parseJsonText(profileText);
+    std::string name = jstr(proj, "midlet_name", "MIDlet");
+    std::string cls = jstr(proj, "midlet_class", "MainMIDlet");
+    std::string icon = jstr(proj, "icon", "/icon.png");
+    std::string vendor = jstr(proj, "vendor", "Unknown");
+    std::string version = jstr(proj, "version", "0.1.0");
+    std::string midp = jstr(profile, "midp", "2.1");
+    std::string cldc = jstr(profile, "cldc", "1.1");
+    std::ostringstream out;
+    std::string buildInfo = name + " built " + buildDate + " with " + meta.name + " " + meta.version + " " + meta.codename + ".";
+    out << "MIDlet-1: " << name << "," << icon << "," << cls << "\n";
+    out << "MIDlet-Name: " << name << "\n";
+    out << "MIDlet-Version: " << version << "\n";
+    out << "MIDlet-Vendor: " << vendor << "\n";
+    out << "MicroEdition-Profile: MIDP-" << midp << "\n";
+    out << "MicroEdition-Configuration: CLDC-" << cldc << "\n";
+    out << "J2ME-DevSpace-Name: " << meta.name << "\n";
+    out << "J2ME-DevSpace-Version: " << meta.version << "\n";
+    out << "J2ME-DevSpace-Channel: " << meta.channel << "\n";
+    out << "J2ME-DevSpace-Codename: " << meta.codename << "\n";
+    out << "J2ME-Build-Date: " << buildDate << "\n";
+    out << "J2ME-Build-Info: " << buildInfo << "\n";
+    auto perms = jsonArrayStrings(proj, "permissions");
+    if (!perms.empty()) {
+        out << "MIDlet-Permissions: ";
+        for (size_t i = 0; i < perms.size(); ++i) out << (i ? ", " : "") << perms[i];
+        out << "\n";
+    }
+    return out.str();
+}
+
+static std::string jadFrom(const std::string &projText, const std::string &profileText, long jarSize, const AppMeta &meta, const std::string &buildDate) {
+    json proj = parseJsonText(projText);
+    std::string name = jstr(proj, "midlet_name", "MIDlet");
+    std::string jar = jstr(proj, "jar_name", name + ".jar");
+    std::ostringstream out;
+    out << manifestFrom(projText, profileText, meta, buildDate);
+    out << "MIDlet-Jar-URL: " << jar << "\n";
+    out << "MIDlet-Jar-Size: " << jarSize << "\n";
+    return out.str();
+}
+
+static std::string buildInfoJava(const std::string &pkg, const std::string &midletName, const AppMeta &meta, const std::string &buildDate) {
+    std::ostringstream out;
+    if (!pkg.empty()) out << "package " << pkg << ";\n\n";
+    out << "public final class BuildInfo {\n";
+    out << "    public static final String MIDLET_NAME = \"" << javaStringEscape(midletName) << "\";\n";
+    out << "    public static final String SDK_NAME = \"" << javaStringEscape(meta.name) << "\";\n";
+    out << "    public static final String SDK_VERSION = \"" << javaStringEscape(meta.version) << "\";\n";
+    out << "    public static final String SDK_CHANNEL = \"" << javaStringEscape(meta.channel) << "\";\n";
+    out << "    public static final String SDK_CODENAME = \"" << javaStringEscape(meta.codename) << "\";\n";
+    out << "    public static final String BUILD_DATE = \"" << javaStringEscape(buildDate) << "\";\n";
+    out << "    public static final String BUILD_INFO = \"" << javaStringEscape(midletName + " built " + buildDate + " with " + meta.name + " " + meta.version + " " + meta.codename + ".") << "\";\n";
+    out << "    private BuildInfo() {}\n";
+    out << "}\n";
+    return out.str();
+}
+
+static std::string antBuildXml(const std::string &projectName, const std::string &jarName) {
+    return std::string(R"XML(<project name=")XML") + projectName + R"XML(" default="dist">
+    <property environment="env"/>
+    <property name="src.dir" value="src"/>
+    <property name="generated.src.dir" value="build/generated-src"/>
+    <property name="res.dir" value="res"/>
+    <property name="build.dir" value="build"/>
+    <property name="classes.dir" value="build/classes"/>
+    <property name="preverified.dir" value="build/preverified"/>
+    <property name="dist.dir" value="dist"/>
+    <property name="manifest.file" value="build/generated/MANIFEST.MF"/>
+    <property name="jar.file" value="dist/)XML" + jarName + R"XML("/>
+    <property name="wtk.home" value="${env.WTK_HOME}"/>
+
+    <target name="clean">
+        <delete dir="${classes.dir}"/>
+        <delete dir="${preverified.dir}"/>
+        <delete dir="${dist.dir}"/>
+    </target>
+
+    <target name="compile">
+        <mkdir dir="${classes.dir}"/>
+        <javac destdir="${classes.dir}" includeantruntime="false" source="1.3" target="1.1">
+            <src path="${src.dir}"/>
+            <src path="${generated.src.dir}"/>
+            <classpath>
+                <pathelement location="${wtk.home}/lib/cldcapi11.jar"/>
+                <pathelement location="${wtk.home}/lib/midpapi21.jar"/>
+            </classpath>
+        </javac>
+    </target>
+
+    <target name="preverify" depends="compile">
+        <mkdir dir="${preverified.dir}"/>
+        <exec executable="${wtk.home}/bin/preverify" failonerror="true">
+            <arg value="-classpath"/>
+            <arg value="${wtk.home}/lib/cldcapi11.jar${path.separator}${wtk.home}/lib/midpapi21.jar${path.separator}${classes.dir}"/>
+            <arg value="-d"/>
+            <arg value="${preverified.dir}"/>
+            <arg value="${classes.dir}"/>
+        </exec>
+    </target>
+
+    <target name="dist" depends="preverify">
+        <mkdir dir="${dist.dir}"/>
+        <jar destfile="${jar.file}" manifest="${manifest.file}">
+            <fileset dir="${preverified.dir}"/>
+            <fileset dir="${res.dir}" erroronmissingdir="false"/>
+        </jar>
+    </target>
+</project>
+)XML";
+}
+
+static int runProject(const fs::path &ws, const std::string &projectArg, const std::string &profileArg);
+
+static int buildProject(const fs::path &ws, const AppMeta &meta, const std::string &projectArg, const std::string &profileArg, const std::string &jdkArg, bool runAfter) {
+    fs::path p = resolveProject(ws, projectArg);
+    if (p.empty() || !fs::exists(p / "j2me.proj.json")) {
+        std::cerr << "No j2me project found. Run inside project directory or pass project name.\n";
+        return 2;
+    }
+    std::string profileName = pickProfile(p, profileArg);
+    if (profileName.empty() || !fs::exists(p / ("j2me.profile-" + profileName + ".json"))) {
+        std::cerr << "No valid build profile found. Expected j2me.profile-<name>.json\n";
+        return 2;
+    }
+    std::string proj = readAll(p / "j2me.proj.json");
+    std::string prof = readAll(p / ("j2me.profile-" + profileName + ".json"));
+    json projJson = parseJsonText(proj);
+    std::string name = jstr(projJson, "name", p.filename().string());
+    std::string jar = jstr(projJson, "jar_name", name + ".jar");
+
+    std::string buildDate = nowIsoLocal();
+    fs::create_directories(p / "build" / "generated");
+    fs::create_directories(p / "build" / "generated-src");
+    fs::create_directories(p / "dist");
+    writeAll(p / "build" / "generated" / "MANIFEST.MF", manifestFrom(proj, prof, meta, buildDate));
+    std::string pkg = packageFromClass(jstr(projJson, "midlet_class", "MainMIDlet"));
+    writeAll(packagePath(p / "build" / "generated-src", pkg) / "BuildInfo.java", buildInfoJava(pkg, name, meta, buildDate));
+    writeAll(p / "build.xml", antBuildXml(name, jar));
+
+    fs::path ant = ws / "sdk" / "ant" / "current" / "bin" / (std::string("ant") +
+#ifdef _WIN32
+    ".bat"
+#else
+    ""
+#endif
+    );
+    std::string antCmd = fs::exists(ant) ? shellQuote(ant) : "ant";
+
+    fs::path wtk = ws / "sdk" / "wtk" / "current";
+    std::string cmd;
+#ifdef _WIN32
+    cmd = "cd /d " + shellQuote(p) + " && ";
+    if (!jdkArg.empty()) cmd += "set JAVA_HOME=" + (ws / "sdk" / "jdk" / jdkArg).string() + " && ";
+    if (fs::exists(wtk)) cmd += "set WTK_HOME=" + wtk.string() + " && ";
+    cmd += antCmd + " clean dist";
+#else
+    cmd = "cd " + shellQuote(p) + " && ";
+    if (!jdkArg.empty()) cmd += "JAVA_HOME=" + shellQuote(ws / "sdk" / "jdk" / jdkArg) + " ";
+    if (fs::exists(wtk)) cmd += "WTK_HOME=" + shellQuote(wtk) + " ";
+    cmd += antCmd + " clean dist";
+#endif
+    int rc = runCommand(cmd);
+    if (rc != 0) return rc;
+
+    fs::path jarPath = p / "dist" / jar;
+    long size = fs::exists(jarPath) ? static_cast<long>(fs::file_size(jarPath)) : 0;
+    std::string jadName = fs::path(jar).replace_extension(".jad").filename().string();
+    writeAll(p / "dist" / jadName, jadFrom(proj, prof, size, meta, buildDate));
+    std::cout << "Built: " << jarPath << "\n";
+    std::cout << "JAD:   " << (p / "dist" / jadName) << "\n";
+    if (runAfter) return runProject(ws, name, profileName);
+    return 0;
+}
+
+static int emulatorSetup(const fs::path &ws) {
+    fs::create_directories(ws / "emulators" / "freej2me-plus");
+    fs::create_directories(ws / "emulators" / "microemulator");
+    std::cout << "Recommended emulator layout inside workspace:\n"
+              << "  emulators/freej2me-plus/freej2me.jar\n"
+              << "  emulators/microemulator/microemulator.jar\n\n"
+              << "Default run order: FreeJ2ME-Plus AWT -> MicroEmulator -> WTK emulator.\n"
+              << "Put downloaded jars there, then use: j2me --run <project>.\n";
+    return 0;
+}
+
+static int runProject(const fs::path &ws, const std::string &projectArg, const std::string &profileArg) {
+    fs::path p = resolveProject(ws, projectArg);
+    if (p.empty() || !fs::exists(p / "j2me.proj.json")) {
+        std::cerr << "No j2me project found.\n";
+        return 2;
+    }
+    std::string profileName = pickProfile(p, profileArg);
+    (void)profileName;
+    json proj = readJsonFile(p / "j2me.proj.json");
+    std::string name = jstr(proj, "name", p.filename().string());
+    std::string jar = jstr(proj, "jar_name", name + ".jar");
+    fs::path jarPath = p / "dist" / jar;
+    fs::path jadPath = p / "dist" / fs::path(jar).replace_extension(".jad").filename();
+    if (!fs::exists(jarPath)) { std::cerr << "JAR not found. Build first: j2me --build " << name << "\n"; return 2; }
+
+    fs::path freej2me = ws / "emulators" / "freej2me-plus" / "freej2me.jar";
+    if (fs::exists(freej2me)) {
+        return runCommand("java -jar " + shellQuote(freej2me) + " " + shellQuote(jarPath));
+    }
+    fs::path micro = ws / "emulators" / "microemulator" / "microemulator.jar";
+    if (fs::exists(micro)) {
+        fs::path target = fs::exists(jadPath) ? jadPath : jarPath;
+        return runCommand("java -jar " + shellQuote(micro) + " " + shellQuote(target));
+    }
+    fs::path wtkEmu = ws / "sdk" / "wtk" / "current" / "bin" / (std::string("emulator") +
+#ifdef _WIN32
+    ".exe"
+#else
+    ""
+#endif
+    );
+    if (fs::exists(wtkEmu) && fs::exists(jadPath)) {
+        return runCommand(shellQuote(wtkEmu) + " -Xdescriptor:" + shellQuote(jadPath));
+    }
+    std::cerr << "No emulator configured. Run: j2me --emulator setup\n";
+    return 2;
+}
+
+int main(int argc, char **argv) {
+    std::vector<std::string> args(argv + 1, argv + argc);
+    fs::path toolHome = findToolHome(argc > 0 ? argv[0] : nullptr);
+    AppMeta meta = loadAppMeta(toolHome);
+
+    if (args.empty() || hasArg(args, "--help") || hasArg(args, "-h")) { cmdHelp(meta); return 0; }
+    if (hasArg(args, "--version") || hasArg(args, "-V")) { std::cout << formatAppVersion(meta) << "\n"; return 0; }
+
+    if (args[0] == "--workspace" && args.size() >= 2) {
+        std::string action = args[1];
+        if (action == "setup") {
+            fs::path dir;
+            if (args.size() >= 3 && args[2].rfind("--", 0) != 0) dir = args[2];
+            return workspaceSetup(toolHome, meta, dir);
+        }
+        if (action == "remove") {
+            fs::path dir;
+            if (args.size() >= 3 && args[2].rfind("--", 0) != 0) dir = args[2];
+            return workspaceRemove(dir, hasArg(args, "--yes"));
+        }
+        if (action == "info") return workspaceInfo(findWorkspaceRoot());
+        std::cerr << "Invalid workspace command.\n"; return 2;
+    }
+
+    fs::path ws = findWorkspaceRoot();
+    if (int rc = requireWorkspace(ws)) return rc;
+
+    if ((args[0] == "--project" || args[0] == "-P") && args.size() >= 2) {
+        std::string action = args[1];
+        if (action == "create" && args.size() >= 3) return projectCreate(ws, args[2]);
+        if (action == "remove" && args.size() >= 3) return projectRemove(ws, args[2]);
+        if (action == "list") return projectList(ws);
+        if (action == "properties" && args.size() >= 3) return projectProperties(ws, args[2]);
+        std::cerr << "Invalid project command.\n"; return 2;
+    }
+
+    if ((args[0] == "--sdk" || args[0] == "-S") && args.size() >= 2) {
+        if (args[1] == "setup") return sdkSetup(ws);
+        if (args[1] == "list") return sdkList(ws);
+        std::cerr << "Invalid sdk command.\n"; return 2;
+    }
+
+    if ((args[0] == "--tools" || args[0] == "-T") && args.size() >= 2) {
+        if (args[1] == "list") return toolsList(ws);
+        std::vector<std::string> extra;
+        for (size_t i = 2; i < args.size(); ++i) extra.push_back(args[i]);
+        return toolRun(ws, args[1], extra);
+    }
+
+    if (args[0] == "--build") {
+        std::string projectArg;
+        if (args.size() >= 2 && args[1].rfind("--", 0) != 0) projectArg = args[1];
+        std::string profile = argAfter(args, "--profile", "");
+        std::string jdk = argAfter(args, "--jdk", "");
+        bool runAfter = hasArg(args, "--run-after-build");
+        return buildProject(ws, meta, projectArg, profile, jdk, runAfter);
+    }
+
+    if (args[0] == "--emulator" && args.size() >= 2) {
+        if (args[1] == "setup") return emulatorSetup(ws);
+        std::cerr << "Invalid emulator command.\n"; return 2;
+    }
+
+    if (args[0] == "--run") {
+        std::string projectArg;
+        if (args.size() >= 2 && args[1].rfind("--", 0) != 0) projectArg = args[1];
+        return runProject(ws, projectArg, argAfter(args, "--profile", ""));
+    }
+
+    std::cerr << "Unknown command.\n";
+    cmdHelp(meta);
+    return 2;
+}
