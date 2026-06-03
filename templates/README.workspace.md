@@ -15,4 +15,12 @@ cache/       Download/update cache
 temp/        Safe temporary backups and partial installs
 ```
 
+Default project:
+
+```text
+projects/j2me_devspace-demo/
+```
+
+Use it to test build tools, emulator setup and basic MIDP LCDUI widgets on small screens.
+
 Do not delete `j2me.workspace.json` unless you intentionally want this directory to stop being detected as a workspace.

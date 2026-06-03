@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -14,11 +16,19 @@
 #include <nlohmann/json.hpp>
 #include <yaml-cpp/yaml.h>
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
+
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 #ifndef J2ME_CLI_VERSION
-#define J2ME_CLI_VERSION NULL
+#define J2ME_CLI_VERSION "0.1b"
+#endif
+
+#ifndef J2ME_INSTALL_DATADIR
+#define J2ME_INSTALL_DATADIR ""
 #endif
 
 struct AppMeta {
@@ -72,6 +82,19 @@ static json parseJsonText(const std::string &text, json fallback = json::object(
 
 static json readJsonFile(const fs::path &p, json fallback = json::object()) {
     return parseJsonText(readAll(p), fallback);
+}
+
+static std::optional<json> readJsonFileStrict(const fs::path &p, const std::string &schema = "") {
+    try {
+        json j = json::parse(readAll(p));
+        if (!schema.empty()) {
+            if (!j.is_object() || !j.contains("schema") || !j.at("schema").is_string()) return std::nullopt;
+            if (j.at("schema").get<std::string>() != schema) return std::nullopt;
+        }
+        return j;
+    } catch (const std::exception &) {
+        return std::nullopt;
+    }
 }
 
 static void writeJsonFile(const fs::path &p, const json &j) {
@@ -161,6 +184,69 @@ static fs::path absPath(const fs::path &p) {
     return a.lexically_normal();
 }
 
+static bool isSafeName(const std::string &s) {
+    if (s.empty() || s == "." || s == "..") return false;
+    for (unsigned char c : s) {
+        if (std::isalnum(c) || c == '_' || c == '-' || c == '.') continue;
+        return false;
+    }
+    return true;
+}
+
+static bool isSafeFileName(const std::string &s, const std::string &requiredExt = "") {
+    if (!isSafeName(s)) return false;
+    fs::path p(s);
+    if (p.is_absolute() || p.has_parent_path() || p.filename().string() != s) return false;
+    if (!requiredExt.empty() && p.extension() != requiredExt) return false;
+    return true;
+}
+
+static bool isSafeJavaQualifiedName(const std::string &s) {
+    if (s.empty() || s.front() == '.' || s.back() == '.') return false;
+    std::stringstream ss(s);
+    std::string part;
+    while (std::getline(ss, part, '.')) {
+        if (part.empty()) return false;
+        if (!std::isalpha(static_cast<unsigned char>(part[0])) && part[0] != '_') return false;
+        for (unsigned char c : part) {
+            if (!std::isalnum(c) && c != '_') return false;
+        }
+    }
+    return true;
+}
+
+static bool rejectUnsafeName(const std::string &kind, const std::string &value) {
+    if (isSafeName(value)) return false;
+    std::cerr << "Invalid " << kind << " name: " << value << "\n"
+              << "Use only letters, digits, '.', '_' and '-'. Path separators are not allowed.\n";
+    return true;
+}
+
+static std::string descriptorValue(const std::string &s) {
+    std::string out;
+    for (unsigned char c : s) {
+        if (c == '\r' || c == '\n') continue;
+        if (c < 32 && c != '\t') continue;
+        out.push_back(static_cast<char>(c));
+    }
+    return out;
+}
+
+static std::string xmlEscape(const std::string &s) {
+    std::string out;
+    for (char c : s) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&apos;"; break;
+            default: out += c; break;
+        }
+    }
+    return out;
+}
+
 static fs::path findToolHome(const char *argv0) {
     if (const char *env = std::getenv("J2ME_DEVSPACE_HOME")) {
         fs::path p = absPath(env);
@@ -175,13 +261,19 @@ static fs::path findToolHome(const char *argv0) {
         std::vector<fs::path> candidates = {
             dir,
             dir.parent_path(),
+            dir.parent_path() / "share" / "j2me-devspace",
             dir.parent_path().parent_path(),
+            dir.parent_path().parent_path() / "share" / "j2me-devspace",
             fs::current_path(),
             fs::current_path().parent_path()
         };
         for (const auto &c : candidates) {
             if (!c.empty() && fs::exists(c / "j2me.devspace.yml")) return absPath(c);
         }
+    }
+    if (std::string(J2ME_INSTALL_DATADIR).size() > 0) {
+        fs::path installed = absPath(J2ME_INSTALL_DATADIR);
+        if (fs::exists(installed / "j2me.devspace.yml")) return installed;
     }
     return absPath(fs::current_path());
 }
@@ -269,7 +361,15 @@ static std::string shellQuote(const fs::path &p) {
 
 static int runCommand(const std::string &cmd) {
     std::cout << "> " << cmd << "\n";
-    return std::system(cmd.c_str());
+    int status = std::system(cmd.c_str());
+    if (status == -1) return 127;
+#ifdef _WIN32
+    return status;
+#else
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return status;
+#endif
 }
 
 static bool copyDirIfExists(const fs::path &from, const fs::path &to) {
@@ -391,7 +491,6 @@ static json defaultProfileJson() {
 
 static void cmdHelp(const AppMeta &meta) {
     std::cout << formatAppVersion(meta) << "\n"
-              << "CLI: " << meta.cli << "\n\n"
               << "Usage:\n"
               << "  j2me --version | -V\n"
               << "  j2me --workspace setup [DIR]\n"
@@ -409,6 +508,43 @@ static void cmdHelp(const AppMeta &meta) {
               << "  j2me --emulator setup\n"
               << "  j2me --run [PROJECT] [--profile NAME]\n\n"
               << "Most commands require a workspace. Create one with: j2me --workspace setup <DIR>\n";
+}
+
+static int cmdExampleUsage(const std::string &group) {
+    std::cerr << "Example Usage:\n";
+    if (group == "--workspace") {
+        std::cerr << "  j2me --workspace setup [DIR]\n"
+                  << "  j2me --workspace remove [DIR] [--yes]\n"
+                  << "  j2me --workspace info\n";
+        return 2;
+    }
+    if (group == "--project" || group == "-P") {
+        std::cerr << "  j2me --project create <NAME>\n"
+                  << "  j2me --project remove <NAME>\n"
+                  << "  j2me --project list\n"
+                  << "  j2me --project properties <NAME>\n"
+                  << "  j2me -P create <NAME>\n";
+        return 2;
+    }
+    if (group == "--sdk" || group == "-S") {
+        std::cerr << "  j2me --sdk setup\n"
+                  << "  j2me --sdk list\n"
+                  << "  j2me -S list\n";
+        return 2;
+    }
+    if (group == "--tools" || group == "-T") {
+        std::cerr << "  j2me --tools list\n"
+                  << "  j2me --tools update [NAME]\n"
+                  << "  j2me --tools <NAME> [args...]\n"
+                  << "  j2me -T <NAME> [args...]\n";
+        return 2;
+    }
+    if (group == "--emulator") {
+        std::cerr << "  j2me --emulator setup\n";
+        return 2;
+    }
+    std::cerr << "  j2me --help\n";
+    return 2;
 }
 
 static int workspaceSetup(const fs::path &toolHome, const AppMeta &meta, const fs::path &targetArg) {
@@ -440,6 +576,10 @@ static int workspaceSetup(const fs::path &toolHome, const AppMeta &meta, const f
     copyDirIfExists(toolHome / "templates" / "tools", target / "tools");
     copyDirIfExists(toolHome / "templates" / "profiles", target / "profiles");
     copyDirIfExists(toolHome / "templates" / "packages", target / "packages");
+    fs::path demoProject = target / "projects" / "j2me_devspace-demo";
+    if (!fs::exists(demoProject)) {
+        copyDirIfExists(toolHome / "templates" / "project" / "app" / "demo", demoProject);
+    }
     if (fs::exists(toolHome / "templates" / "README.workspace.md")) {
         fs::copy_file(toolHome / "templates" / "README.workspace.md", target / "README.workspace.md", fs::copy_options::overwrite_existing);
     }
@@ -448,6 +588,7 @@ static int workspaceSetup(const fs::path &toolHome, const AppMeta &meta, const f
     }
 
     std::cout << "Workspace ready: " << target << "\n";
+    std::cout << "Demo project: projects/j2me_devspace-demo\n";
     std::cout << "Next:\n  cd " << target << "\n  j2me --workspace info\n";
     return 0;
 }
@@ -569,17 +710,22 @@ static fs::path currentProjectDir(const fs::path &ws) {
 }
 
 static fs::path resolveProject(const fs::path &ws, const std::string &name) {
-    if (!name.empty()) return ws / "projects" / name;
+    if (!name.empty()) {
+        if (!isSafeName(name)) return {};
+        return ws / "projects" / name;
+    }
     fs::path cur = currentProjectDir(ws);
     if (!cur.empty()) return cur;
     return {};
 }
 
 static int projectCreate(const fs::path &ws, const std::string &name) {
+    if (rejectUnsafeName("project", name)) return 2;
     fs::path p = ws / "projects" / name;
     if (fs::exists(p)) { std::cerr << "Project already exists: " << p << "\n"; return 2; }
     json wsjson = readJsonFile(ws / "j2me.workspace.json");
     std::string defaultProfile = jstr(wsjson, "default_profile", "lg-gs290");
+    if (!isSafeName(defaultProfile)) defaultProfile = "lg-gs290";
     std::string ident = safeIdent(name);
     fs::create_directories(p / "src" / "com" / "ilyabot" / ident);
     fs::create_directories(p / "res" / "icons");
@@ -602,8 +748,8 @@ static int projectCreate(const fs::path &ws, const std::string &name) {
         "    private final Command exitCommand = new Command(\"Exit\", Command.EXIT, 0);\n\n"
         "    public void startApp() {\n"
         "        display = Display.getDisplay(this);\n"
-        "        Form form = new Form(\"" + name + "\");\n"
-        "        form.append(\"Hello from J2ME DevSpace. Default profile: " + defaultProfile + ".\");\n"
+        "        Form form = new Form(\"" + javaStringEscape(name) + "\");\n"
+        "        form.append(\"Hello from J2ME DevSpace. Default profile: " + javaStringEscape(defaultProfile) + ".\");\n"
         "        form.addCommand(exitCommand);\n"
         "        form.setCommandListener(this);\n"
         "        display.setCurrent(form);\n"
@@ -635,6 +781,7 @@ static int projectList(const fs::path &ws) {
 }
 
 static int projectRemove(const fs::path &ws, const std::string &name) {
+    if (rejectUnsafeName("project", name)) return 2;
     fs::path p = ws / "projects" / name;
     if (!fs::exists(p / "j2me.proj.json")) { std::cerr << "Project not found: " << name << "\n"; return 2; }
     std::cout << "Remove " << p << " ? Type YES: ";
@@ -647,9 +794,12 @@ static int projectRemove(const fs::path &ws, const std::string &name) {
 }
 
 static int projectProperties(const fs::path &ws, const std::string &name) {
+    if (rejectUnsafeName("project", name)) return 2;
     fs::path p = ws / "projects" / name / "j2me.proj.json";
     if (!fs::exists(p)) { std::cerr << "Project not found: " << name << "\n"; return 2; }
-    json j = readJsonFile(p);
+    auto strict = readJsonFileStrict(p, "j2me.proj/1");
+    if (!strict) { std::cerr << "Invalid project metadata: " << p << "\n"; return 2; }
+    json j = *strict;
     std::map<std::string, std::string> vals;
     vals["name"] = jstr(j, "name", name);
     vals["midlet_name"] = jstr(j, "midlet_name", name);
@@ -677,18 +827,34 @@ static int projectProperties(const fs::path &ws, const std::string &name) {
         perms.clear();
         std::stringstream ss(ps);
         std::string item;
-        while (std::getline(ss, item, ',')) perms.push_back(trim(item));
+        while (std::getline(ss, item, ',')) {
+            item = trim(item);
+            if (!item.empty()) perms.push_back(descriptorValue(item));
+        }
+    }
+
+    if (!isSafeJavaQualifiedName(vals["midlet_class"])) {
+        std::cerr << "Invalid midlet_class. Expected Java qualified class name, for example com.example.MainMIDlet.\n";
+        return 2;
+    }
+    if (!isSafeFileName(vals["jar_name"], ".jar")) {
+        std::cerr << "Invalid jar_name. Use a local .jar file name without path separators.\n";
+        return 2;
+    }
+    if (!isSafeName(vals["default_profile"])) {
+        std::cerr << "Invalid default_profile name.\n";
+        return 2;
     }
 
     json out;
     out["schema"] = "j2me.proj/1";
-    out["name"] = vals["name"];
-    out["midlet_name"] = vals["midlet_name"];
+    out["name"] = descriptorValue(vals["name"]);
+    out["midlet_name"] = descriptorValue(vals["midlet_name"]);
     out["midlet_class"] = vals["midlet_class"];
-    out["version"] = vals["version"];
-    out["vendor"] = vals["vendor"];
+    out["version"] = descriptorValue(vals["version"]);
+    out["vendor"] = descriptorValue(vals["vendor"]);
     out["jar_name"] = vals["jar_name"];
-    out["icon"] = vals["icon"];
+    out["icon"] = descriptorValue(vals["icon"]);
     out["permissions"] = perms;
     out["default_profile"] = vals["default_profile"];
     writeJsonFile(p, out);
@@ -754,6 +920,7 @@ static int toolRun(const fs::path &ws, const std::string &name, const std::vecto
         std::cout << "Tool auto-update skeleton is present. Real updater must download GitHub release archive, backup old tool to tools/<name>/temp, then verify j2me.tool.yml version.\n";
         return 0;
     }
+    if (rejectUnsafeName("tool", name)) return 2;
     fs::path main = ws / "tools" / name / "main.py";
     if (!fs::exists(main)) { std::cerr << "Tool not found in workspace: " << name << "\n"; return 2; }
 #ifdef _WIN32
@@ -781,7 +948,7 @@ static std::vector<std::string> profilesInProject(const fs::path &p) {
 }
 
 static std::string pickProfile(const fs::path &p, const std::string &requested) {
-    if (!requested.empty()) return requested;
+    if (!requested.empty()) return isSafeName(requested) ? requested : "";
     auto profs = profilesInProject(p);
     if (profs.empty()) return "";
     if (profs.size() == 1) return profs[0];
@@ -790,19 +957,20 @@ static std::string pickProfile(const fs::path &p, const std::string &requested) 
     std::cout << "Profile: ";
     std::string x;
     std::getline(std::cin, x);
-    return trim(x);
+    x = trim(x);
+    return isSafeName(x) ? x : "";
 }
 
 static std::string manifestFrom(const std::string &projText, const std::string &profileText, const AppMeta &meta, const std::string &buildDate) {
     json proj = parseJsonText(projText);
     json profile = parseJsonText(profileText);
-    std::string name = jstr(proj, "midlet_name", "MIDlet");
-    std::string cls = jstr(proj, "midlet_class", "MainMIDlet");
-    std::string icon = jstr(proj, "icon", "/icon.png");
-    std::string vendor = jstr(proj, "vendor", "Unknown");
-    std::string version = jstr(proj, "version", "0.1.0");
-    std::string midp = jstr(profile, "midp", "2.1");
-    std::string cldc = jstr(profile, "cldc", "1.1");
+    std::string name = descriptorValue(jstr(proj, "midlet_name", "MIDlet"));
+    std::string cls = descriptorValue(jstr(proj, "midlet_class", "MainMIDlet"));
+    std::string icon = descriptorValue(jstr(proj, "icon", "/icon.png"));
+    std::string vendor = descriptorValue(jstr(proj, "vendor", "Unknown"));
+    std::string version = descriptorValue(jstr(proj, "version", "0.1.0"));
+    std::string midp = descriptorValue(jstr(profile, "midp", "2.1"));
+    std::string cldc = descriptorValue(jstr(profile, "cldc", "1.1"));
     std::ostringstream out;
     std::string buildInfo = name + " built " + buildDate + " with " + meta.name + " " + meta.version + " " + meta.codename + ".";
     out << "MIDlet-1: " << name << "," << icon << "," << cls << "\n";
@@ -811,16 +979,16 @@ static std::string manifestFrom(const std::string &projText, const std::string &
     out << "MIDlet-Vendor: " << vendor << "\n";
     out << "MicroEdition-Profile: MIDP-" << midp << "\n";
     out << "MicroEdition-Configuration: CLDC-" << cldc << "\n";
-    out << "J2ME-DevSpace-Name: " << meta.name << "\n";
-    out << "J2ME-DevSpace-Version: " << meta.version << "\n";
-    out << "J2ME-DevSpace-Channel: " << meta.channel << "\n";
-    out << "J2ME-DevSpace-Codename: " << meta.codename << "\n";
+    out << "J2ME-DevSpace-Name: " << descriptorValue(meta.name) << "\n";
+    out << "J2ME-DevSpace-Version: " << descriptorValue(meta.version) << "\n";
+    out << "J2ME-DevSpace-Channel: " << descriptorValue(meta.channel) << "\n";
+    out << "J2ME-DevSpace-Codename: " << descriptorValue(meta.codename) << "\n";
     out << "J2ME-Build-Date: " << buildDate << "\n";
     out << "J2ME-Build-Info: " << buildInfo << "\n";
     auto perms = jsonArrayStrings(proj, "permissions");
     if (!perms.empty()) {
         out << "MIDlet-Permissions: ";
-        for (size_t i = 0; i < perms.size(); ++i) out << (i ? ", " : "") << perms[i];
+        for (size_t i = 0; i < perms.size(); ++i) out << (i ? ", " : "") << descriptorValue(perms[i]);
         out << "\n";
     }
     return out.str();
@@ -828,8 +996,8 @@ static std::string manifestFrom(const std::string &projText, const std::string &
 
 static std::string jadFrom(const std::string &projText, const std::string &profileText, long jarSize, const AppMeta &meta, const std::string &buildDate) {
     json proj = parseJsonText(projText);
-    std::string name = jstr(proj, "midlet_name", "MIDlet");
-    std::string jar = jstr(proj, "jar_name", name + ".jar");
+    std::string name = descriptorValue(jstr(proj, "midlet_name", "MIDlet"));
+    std::string jar = descriptorValue(jstr(proj, "jar_name", name + ".jar"));
     std::ostringstream out;
     out << manifestFrom(projText, profileText, meta, buildDate);
     out << "MIDlet-Jar-URL: " << jar << "\n";
@@ -910,6 +1078,9 @@ static std::string antBuildXml(const std::string &projectName, const std::string
 static int runProject(const fs::path &ws, const std::string &projectArg, const std::string &profileArg);
 
 static int buildProject(const fs::path &ws, const AppMeta &meta, const std::string &projectArg, const std::string &profileArg, const std::string &jdkArg, bool runAfter) {
+    if (!projectArg.empty() && rejectUnsafeName("project", projectArg)) return 2;
+    if (!profileArg.empty() && rejectUnsafeName("profile", profileArg)) return 2;
+    if (!jdkArg.empty() && rejectUnsafeName("JDK", jdkArg)) return 2;
     fs::path p = resolveProject(ws, projectArg);
     if (p.empty() || !fs::exists(p / "j2me.proj.json")) {
         std::cerr << "No j2me project found. Run inside project directory or pass project name.\n";
@@ -920,20 +1091,33 @@ static int buildProject(const fs::path &ws, const AppMeta &meta, const std::stri
         std::cerr << "No valid build profile found. Expected j2me.profile-<name>.json\n";
         return 2;
     }
-    std::string proj = readAll(p / "j2me.proj.json");
-    std::string prof = readAll(p / ("j2me.profile-" + profileName + ".json"));
-    json projJson = parseJsonText(proj);
+    auto projStrict = readJsonFileStrict(p / "j2me.proj.json", "j2me.proj/1");
+    auto profStrict = readJsonFileStrict(p / ("j2me.profile-" + profileName + ".json"), "j2me.profile/1");
+    if (!projStrict) { std::cerr << "Invalid project metadata: " << (p / "j2me.proj.json") << "\n"; return 2; }
+    if (!profStrict) { std::cerr << "Invalid profile metadata: " << (p / ("j2me.profile-" + profileName + ".json")) << "\n"; return 2; }
+    std::string proj = projStrict->dump();
+    std::string prof = profStrict->dump();
+    json projJson = *projStrict;
     std::string name = jstr(projJson, "name", p.filename().string());
+    std::string midletClass = jstr(projJson, "midlet_class", "MainMIDlet");
     std::string jar = jstr(projJson, "jar_name", name + ".jar");
+    if (!isSafeJavaQualifiedName(midletClass)) {
+        std::cerr << "Invalid midlet_class in project metadata: " << midletClass << "\n";
+        return 2;
+    }
+    if (!isSafeFileName(jar, ".jar")) {
+        std::cerr << "Invalid jar_name in project metadata: " << jar << "\n";
+        return 2;
+    }
 
     std::string buildDate = nowIsoLocal();
     fs::create_directories(p / "build" / "generated");
     fs::create_directories(p / "build" / "generated-src");
     fs::create_directories(p / "dist");
     writeAll(p / "build" / "generated" / "MANIFEST.MF", manifestFrom(proj, prof, meta, buildDate));
-    std::string pkg = packageFromClass(jstr(projJson, "midlet_class", "MainMIDlet"));
+    std::string pkg = packageFromClass(midletClass);
     writeAll(packagePath(p / "build" / "generated-src", pkg) / "BuildInfo.java", buildInfoJava(pkg, name, meta, buildDate));
-    writeAll(p / "build.xml", antBuildXml(name, jar));
+    writeAll(p / "build.xml", antBuildXml(xmlEscape(name), xmlEscape(jar)));
 
     fs::path ant = ws / "sdk" / "ant" / "current" / "bin" / (std::string("ant") +
 #ifdef _WIN32
@@ -948,8 +1132,8 @@ static int buildProject(const fs::path &ws, const AppMeta &meta, const std::stri
     std::string cmd;
 #ifdef _WIN32
     cmd = "cd /d " + shellQuote(p) + " && ";
-    if (!jdkArg.empty()) cmd += "set JAVA_HOME=" + (ws / "sdk" / "jdk" / jdkArg).string() + " && ";
-    if (fs::exists(wtk)) cmd += "set WTK_HOME=" + wtk.string() + " && ";
+    if (!jdkArg.empty()) cmd += "set \"JAVA_HOME=" + (ws / "sdk" / "jdk" / jdkArg).string() + "\" && ";
+    if (fs::exists(wtk)) cmd += "set \"WTK_HOME=" + wtk.string() + "\" && ";
     cmd += antCmd + " clean dist";
 #else
     cmd = "cd " + shellQuote(p) + " && ";
@@ -982,6 +1166,8 @@ static int emulatorSetup(const fs::path &ws) {
 }
 
 static int runProject(const fs::path &ws, const std::string &projectArg, const std::string &profileArg) {
+    if (!projectArg.empty() && rejectUnsafeName("project", projectArg)) return 2;
+    if (!profileArg.empty() && rejectUnsafeName("profile", profileArg)) return 2;
     fs::path p = resolveProject(ws, projectArg);
     if (p.empty() || !fs::exists(p / "j2me.proj.json")) {
         std::cerr << "No j2me project found.\n";
@@ -989,9 +1175,15 @@ static int runProject(const fs::path &ws, const std::string &projectArg, const s
     }
     std::string profileName = pickProfile(p, profileArg);
     (void)profileName;
-    json proj = readJsonFile(p / "j2me.proj.json");
+    auto strict = readJsonFileStrict(p / "j2me.proj.json", "j2me.proj/1");
+    if (!strict) { std::cerr << "Invalid project metadata: " << (p / "j2me.proj.json") << "\n"; return 2; }
+    json proj = *strict;
     std::string name = jstr(proj, "name", p.filename().string());
     std::string jar = jstr(proj, "jar_name", name + ".jar");
+    if (!isSafeFileName(jar, ".jar")) {
+        std::cerr << "Invalid jar_name in project metadata: " << jar << "\n";
+        return 2;
+    }
     fs::path jarPath = p / "dist" / jar;
     fs::path jadPath = p / "dist" / fs::path(jar).replace_extension(".jad").filename();
     if (!fs::exists(jarPath)) { std::cerr << "JAR not found. Build first: j2me --build " << name << "\n"; return 2; }
@@ -1027,6 +1219,15 @@ int main(int argc, char **argv) {
     if (args.empty() || hasArg(args, "--help") || hasArg(args, "-h")) { cmdHelp(meta); return 0; }
     if (hasArg(args, "--version") || hasArg(args, "-V")) { std::cout << formatAppVersion(meta) << "\n"; return 0; }
 
+    if (args.size() == 1 && (
+        args[0] == "--workspace" ||
+        args[0] == "--project" || args[0] == "-P" ||
+        args[0] == "--sdk" || args[0] == "-S" ||
+        args[0] == "--tools" || args[0] == "-T" ||
+        args[0] == "--emulator")) {
+        return cmdExampleUsage(args[0]);
+    }
+
     if (args[0] == "--workspace" && args.size() >= 2) {
         std::string action = args[1];
         if (action == "setup") {
@@ -1040,7 +1241,7 @@ int main(int argc, char **argv) {
             return workspaceRemove(dir, hasArg(args, "--yes"));
         }
         if (action == "info") return workspaceInfo(findWorkspaceRoot());
-        std::cerr << "Invalid workspace command.\n"; return 2;
+        return cmdExampleUsage(args[0]);
     }
 
     fs::path ws = findWorkspaceRoot();
@@ -1052,13 +1253,13 @@ int main(int argc, char **argv) {
         if (action == "remove" && args.size() >= 3) return projectRemove(ws, args[2]);
         if (action == "list") return projectList(ws);
         if (action == "properties" && args.size() >= 3) return projectProperties(ws, args[2]);
-        std::cerr << "Invalid project command.\n"; return 2;
+        return cmdExampleUsage(args[0]);
     }
 
     if ((args[0] == "--sdk" || args[0] == "-S") && args.size() >= 2) {
         if (args[1] == "setup") return sdkSetup(ws);
         if (args[1] == "list") return sdkList(ws);
-        std::cerr << "Invalid sdk command.\n"; return 2;
+        return cmdExampleUsage(args[0]);
     }
 
     if ((args[0] == "--tools" || args[0] == "-T") && args.size() >= 2) {
@@ -1079,7 +1280,7 @@ int main(int argc, char **argv) {
 
     if (args[0] == "--emulator" && args.size() >= 2) {
         if (args[1] == "setup") return emulatorSetup(ws);
-        std::cerr << "Invalid emulator command.\n"; return 2;
+        return cmdExampleUsage(args[0]);
     }
 
     if (args[0] == "--run") {

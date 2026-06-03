@@ -1,0 +1,165 @@
+#compdef j2me
+
+_j2me_workspace_root() {
+  local dir="$PWD"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/j2me.workspace.json" ]]; then
+      print -r -- "$dir"
+      return 0
+    fi
+    dir="${dir:h}"
+  done
+  return 1
+}
+
+_j2me_projects() {
+  local ws project
+  ws="$(_j2me_workspace_root)" || return 0
+  [[ -d "$ws/projects" ]] || return 0
+
+  for project in "$ws"/projects/*; do
+    [[ -d "$project" && -f "$project/j2me.proj.json" ]] || continue
+    compadd -- "${project:t}"
+  done
+}
+
+_j2me_tools() {
+  local ws tool
+  ws="$(_j2me_workspace_root)" || return 0
+  [[ -d "$ws/tools" ]] || return 0
+
+  for tool in "$ws"/tools/*; do
+    [[ -d "$tool" && -f "$tool/j2me.tool.yml" ]] || continue
+    compadd -- "${tool:t}"
+  done
+}
+
+_j2me_profiles() {
+  local file name
+  for file in j2me.profile-*.json; do
+    [[ -f "$file" ]] || continue
+    name="${file#j2me.profile-}"
+    name="${name%.json}"
+    compadd -- "$name"
+  done
+}
+
+_j2me_jdks() {
+  local ws jdk
+  ws="$(_j2me_workspace_root)" || return 0
+  [[ -d "$ws/sdk/jdk" ]] || return 0
+
+  for jdk in "$ws"/sdk/jdk/*; do
+    [[ -d "$jdk" ]] || continue
+    compadd -- "${jdk:t}"
+  done
+}
+
+_j2me() {
+  local -a root_commands workspace_actions project_actions sdk_actions tool_actions emulator_actions build_options run_options
+
+  root_commands=(
+    '--help:show help'
+    '-h:show help'
+    '--version:show version'
+    '-V:show version'
+    '--workspace:manage workspace'
+    '--project:manage projects'
+    '-P:manage projects'
+    '--sdk:manage SDK packages'
+    '-S:manage SDK packages'
+    '--tools:run bundled tools'
+    '-T:run bundled tools'
+    '--build:build project'
+    '--emulator:manage emulator'
+    '--run:run project in emulator'
+  )
+  workspace_actions=(
+    'setup:create workspace'
+    'remove:remove workspace-owned content'
+    'info:show workspace info'
+  )
+  project_actions=(
+    'create:create project'
+    'remove:remove project'
+    'list:list projects'
+    'properties:edit project properties'
+  )
+  sdk_actions=(
+    'setup:create SDK package directories'
+    'list:list installed SDK packages'
+  )
+  tool_actions=(
+    'list:list tools'
+    'update:update tool'
+  )
+  emulator_actions=(
+    'setup:configure emulator directories'
+  )
+  build_options=(
+    '--profile:select build profile'
+    '--jdk:select JDK version'
+    '--run-after-build:run emulator after build'
+  )
+  run_options=(
+    '--profile:select run profile'
+  )
+
+  case "$words[2]" in
+    --workspace)
+      case "$CURRENT" in
+        3) _describe 'workspace action' workspace_actions ;;
+        4)
+          case "$words[3]" in
+            setup|remove) _files -/ ;;
+          esac
+          ;;
+        *) _arguments '--yes[skip remove confirmation]' ;;
+      esac
+      ;;
+    --project|-P)
+      case "$CURRENT" in
+        3) _describe 'project action' project_actions ;;
+        4)
+          case "$words[3]" in
+            remove|properties) _j2me_projects ;;
+            create) _message 'project name' ;;
+          esac
+          ;;
+      esac
+      ;;
+    --sdk|-S)
+      [[ "$CURRENT" -eq 3 ]] && _describe 'sdk action' sdk_actions
+      ;;
+    --tools|-T)
+      case "$CURRENT" in
+        3) _describe 'tool action' tool_actions && _j2me_tools ;;
+        *) _files ;;
+      esac
+      ;;
+    --build)
+      case "$curcontext" in
+        *:argument-1) _j2me_projects ;;
+        *) ;;
+      esac
+      _arguments \
+        '1:project:_j2me_projects' \
+        '--profile[select build profile]:profile:_j2me_profiles' \
+        '--jdk[select JDK version]:jdk:_j2me_jdks' \
+        '--run-after-build[run emulator after build]'
+      ;;
+    --emulator)
+      [[ "$CURRENT" -eq 3 ]] && _describe 'emulator action' emulator_actions
+      ;;
+    --run)
+      _arguments \
+        '1:project:_j2me_projects' \
+        '--profile[select run profile]:profile:_j2me_profiles'
+      ;;
+    *)
+      _describe 'j2me command' root_commands
+      ;;
+  esac
+}
+
+_j2me "$@"

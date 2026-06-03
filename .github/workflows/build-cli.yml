@@ -28,6 +28,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Linux packaging tools
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
@@ -83,18 +89,37 @@ jobs:
           cp "$binary" "$package_dir/"
           chmod +x "$package_dir"/j2me* 2>/dev/null || true
 
-          cp README.md LICENSE THIRD_PARTY_NOTICES.md j2me.devspace.yml "$package_dir/"
+          cp README.md LICENSE j2me.devspace.yml "$package_dir/"
           cp -R templates "$package_dir/templates"
+          cp -R completions "$package_dir/completions"
 
           (
             cd dist
             cmake -E tar cf "$package.zip" --format=zip "$package"
           )
 
+      - name: Package Linux deb and rpm
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          cpack --config build/CPackConfig.cmake -G DEB
+          cpack --config build/CPackConfig.cmake -G RPM
+          mkdir -p dist/packages
+          mv ./*.deb ./*.rpm dist/packages/
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/${{ matrix.artifact_name }}.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Linux packages
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: j2me-devspace-linux-packages
+          path: dist/packages/*
           if-no-files-found: error
           retention-days: 30

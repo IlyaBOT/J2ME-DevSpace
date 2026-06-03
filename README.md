@@ -32,6 +32,13 @@ cmake --build build --config Release
 ./bin/j2me --version
 ```
 
+Install system-wide:
+
+```bash
+sudo cmake --install build --config Release
+j2me --version
+```
+
 ### macOS
 
 Install command line tools and CMake:
@@ -47,6 +54,13 @@ Build:
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ./bin/j2me --version
+```
+
+Install system-wide:
+
+```bash
+sudo cmake --install build --config Release
+j2me --version
 ```
 
 ### Windows
@@ -91,6 +105,20 @@ j2me-devspace-windows-x64.zip
 
 Successful artifacts are attached to the workflow run. Use them as release candidates when creating a GitHub Release. The macOS artifact is built for x64/Intel because that is the safest baseline for older Macs; add a separate `macos-26` matrix entry later if a native Apple Silicon binary is needed.
 
+The Linux job also generates package artifacts:
+
+```text
+j2me-devspace_<version>_<arch>.deb
+j2me-devspace-<version>-<release>.<arch>.rpm
+```
+
+Local package generation on Linux:
+
+```bash
+cpack --config build/CPackConfig.cmake -G DEB
+cpack --config build/CPackConfig.cmake -G RPM
+```
+
 J2ME DevSpace keeps the **CLI SDK source tree** separate from the user's **J2ME workspace**. The repository contains only C++ source code, templates, metadata, CI config and documentation. Real J2ME projects, downloaded SDKs, tools, emulators and build artifacts live in a workspace created by `j2me --workspace setup`.
 
 ## Repository description
@@ -108,6 +136,7 @@ j2me java-me midp cldc developer-tools
 ```text
 J2ME-DevSpace/
 ├── bin/                 # created by CMake, contains j2me binary
+├── completions/         # shell completion scripts
 ├── src/                 # C++ source code for the CLI
 ├── templates/           # files copied into new workspaces
 │   ├── tools/           # built-in Python tools
@@ -117,7 +146,6 @@ J2ME-DevSpace/
 ├── j2me.devspace.yml    # CLI metadata: name, version, channel, codename
 ├── CMakeLists.txt
 ├── LICENSE
-├── THIRD_PARTY_NOTICES.md
 ├── README.md
 └── .gitignore
 ```
@@ -155,12 +183,60 @@ The CLI intentionally uses existing open-source libraries instead of hand-rolled
 
 CMake first tries `find_package(...)`. If packages are not installed, it downloads them with `FetchContent`.
 
+## Shell completion
+
+Shell completion is provided by the shell, not by the binary itself. Completion scripts are stored by shell:
+
+```text
+completions/
+├── bash/j2me
+├── fish/j2me.fish
+├── sh/README.md
+└── zsh/_j2me
+```
+
+Install for bash:
+
+```bash
+mkdir -p ~/.local/share/bash-completion/completions
+ln -sf /path/to/J2ME-DevSpace/completions/bash/j2me ~/.local/share/bash-completion/completions/j2me
+```
+
+Install for zsh:
+
+```zsh
+fpath=("/path/to/J2ME-DevSpace/completions/zsh" $fpath)
+autoload -Uz compinit
+compinit
+```
+
+Install for fish:
+
+```fish
+mkdir -p ~/.config/fish/completions
+ln -sf /path/to/J2ME-DevSpace/completions/fish/j2me.fish ~/.config/fish/completions/j2me.fish
+```
+
+Plain POSIX `sh` has no standard programmable completion API, so `completions/sh/README.md` documents the limitation.
+
+After installation, open a new shell and use:
+
+```bash
+j2me --em<Tab>
+```
+
 ## Workspace commands
 
 Create workspace in current directory:
 
 ```bash
 j2me --workspace setup
+```
+
+Workspace setup also creates a default demo project:
+
+```text
+projects/j2me_devspace-demo/
 ```
 
 Create workspace in a specific directory:
@@ -322,5 +398,3 @@ MIDlets can read descriptor/manifest properties with `getAppProperty("J2ME-Build
 ## License
 
 Project code is licensed under Apache License 2.0. See `LICENSE`.
-
-Third-party libraries and tools are listed in `THIRD_PARTY_NOTICES.md`.

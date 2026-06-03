@@ -1,0 +1,143 @@
+_j2me_workspace_root() {
+    local dir="$PWD"
+    while [[ "$dir" != "/" ]]; do
+        if [[ -f "$dir/j2me.workspace.json" ]]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+        dir="$(dirname "$dir")"
+    done
+    return 1
+}
+
+_j2me_projects() {
+    local ws project
+    ws="$(_j2me_workspace_root)" || return 0
+    [[ -d "$ws/projects" ]] || return 0
+
+    for project in "$ws"/projects/*; do
+        [[ -d "$project" && -f "$project/j2me.proj.json" ]] || continue
+        printf '%s\n' "$(basename "$project")"
+    done
+}
+
+_j2me_tools() {
+    local ws tool
+    ws="$(_j2me_workspace_root)" || return 0
+    [[ -d "$ws/tools" ]] || return 0
+
+    for tool in "$ws"/tools/*; do
+        [[ -d "$tool" && -f "$tool/j2me.tool.yml" ]] || continue
+        printf '%s\n' "$(basename "$tool")"
+    done
+}
+
+_j2me_profiles() {
+    local file name
+    for file in j2me.profile-*.json; do
+        [[ -f "$file" ]] || continue
+        name="${file#j2me.profile-}"
+        name="${name%.json}"
+        printf '%s\n' "$name"
+    done
+}
+
+_j2me_jdks() {
+    local ws jdk
+    ws="$(_j2me_workspace_root)" || return 0
+    [[ -d "$ws/sdk/jdk" ]] || return 0
+
+    for jdk in "$ws"/sdk/jdk/*; do
+        [[ -d "$jdk" ]] || continue
+        printf '%s\n' "$(basename "$jdk")"
+    done
+}
+
+_j2me_complete() {
+    local cur prev root sub
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD - 1]}"
+    root="${COMP_WORDS[1]}"
+    sub="${COMP_WORDS[2]}"
+
+    if [[ "$cur" == --* && "$root" != "--build" && "$root" != "--run" ]]; then
+        case "$root" in
+            --workspace)
+                COMPREPLY=($(compgen -W "--yes" -- "$cur"))
+                return 0
+                ;;
+            *)
+                COMPREPLY=($(compgen -W "--help --version --workspace --project --sdk --tools --build --emulator --run" -- "$cur"))
+                return 0
+                ;;
+        esac
+    fi
+
+    case "$prev" in
+        --profile)
+            COMPREPLY=($(compgen -W "$(_j2me_profiles)" -- "$cur"))
+            return 0
+            ;;
+        --jdk)
+            COMPREPLY=($(compgen -W "$(_j2me_jdks)" -- "$cur"))
+            return 0
+            ;;
+    esac
+
+    case "$root" in
+        --workspace)
+            case "$COMP_CWORD" in
+                2) COMPREPLY=($(compgen -W "setup remove info" -- "$cur")) ;;
+                3)
+                    case "$sub" in
+                        setup|remove) COMPREPLY=($(compgen -d -- "$cur")) ;;
+                    esac
+                    ;;
+                *) COMPREPLY=($(compgen -W "--yes" -- "$cur")) ;;
+            esac
+            ;;
+        --project|-P)
+            case "$COMP_CWORD" in
+                2) COMPREPLY=($(compgen -W "create remove list properties" -- "$cur")) ;;
+                3)
+                    case "$sub" in
+                        remove|properties) COMPREPLY=($(compgen -W "$(_j2me_projects)" -- "$cur")) ;;
+                    esac
+                    ;;
+            esac
+            ;;
+        --sdk|-S)
+            [[ "$COMP_CWORD" -eq 2 ]] && COMPREPLY=($(compgen -W "setup list" -- "$cur"))
+            ;;
+        --tools|-T)
+            if [[ "$COMP_CWORD" -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "list update $(_j2me_tools)" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -f -- "$cur"))
+            fi
+            ;;
+        --build)
+            if [[ "$cur" == --* ]]; then
+                COMPREPLY=($(compgen -W "--profile --jdk --run-after-build" -- "$cur"))
+            elif [[ "$COMP_CWORD" -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "$(_j2me_projects)" -- "$cur"))
+            fi
+            ;;
+        --emulator)
+            [[ "$COMP_CWORD" -eq 2 ]] && COMPREPLY=($(compgen -W "setup" -- "$cur"))
+            ;;
+        --run)
+            if [[ "$cur" == --* ]]; then
+                COMPREPLY=($(compgen -W "--profile" -- "$cur"))
+            elif [[ "$COMP_CWORD" -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "$(_j2me_projects)" -- "$cur"))
+            fi
+            ;;
+        *)
+            COMPREPLY=($(compgen -W "--help -h --version -V --workspace --project -P --sdk -S --tools -T --build --emulator --run" -- "$cur"))
+            ;;
+    esac
+}
+
+complete -F _j2me_complete j2me

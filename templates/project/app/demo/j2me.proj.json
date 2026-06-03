@@ -1,0 +1,14 @@
+{
+  "schema": "j2me.proj/1",
+  "name": "j2me_devspace-demo",
+  "midlet_name": "J2ME DevSpace Demo",
+  "midlet_class": "DemoMIDlet",
+  "version": "0.1.0",
+  "vendor": "IlyaBOT",
+  "jar_name": "j2me_devspace-demo.jar",
+  "icon": "/icons/icon32.png",
+  "permissions": [
+    "javax.microedition.io.Connector.http"
+  ],
+  "default_profile": "lg-gs290"
+}
