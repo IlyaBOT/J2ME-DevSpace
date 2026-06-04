@@ -42,9 +42,11 @@
       "label": "Sun Java Wireless Toolkit",
       "source": "manual-oracle-archive",
       "default": true,
-      "manual": true,
       "manual_url": "https://www.oracle.com/java/technologies/sun-java-wireless-toolkit.html",
-      "notes": "Oracle archive may require manual download and license acceptance. Put extracted WTK into sdk/wtk/2.5.2_01 and point sdk/wtk/current to it."
+      "archive": "sun_java_wireless_toolkit-2.5.2_01-linuxi486.bin.sh",
+      "mirror_url": "https://ibifs.ddns.net/%D0%9F%D1%80%D0%BE%D1%87%D0%B5%D0%B5/j2me-devspace/sdk/sun_java_wireless_toolkit-2.5.2_01-linuxi486.bin.sh",
+      "supported_os": ["linux"],
+      "notes": "Primary Oracle archive may require an account/license acceptance, so J2ME DevSpace uses the developer mirror. No macOS build is available. The configured mirror contains the Linux installer script sun_java_wireless_toolkit-2.5.2_01-linuxi486.bin.sh."
     },
     {
       "id": "microemulator",
@@ -66,7 +68,8 @@
       "source": "manual-github",
       "manual": true,
       "manual_url": "https://github.com/TASEmulators/freej2me-plus",
-      "notes": "No stable direct jar release URL is listed in this package index. Put freej2me.jar into emulators/freej2me-plus/freej2me.jar."
+      "mirror_url": "https://ibifs.ddns.net/%D0%9F%D1%80%D0%BE%D1%87%D0%B5%D0%B5/j2me-devspace/emulators/freej2me-plus-nightlies.zip",
+      "notes": "Developer mirror provides freej2me-plus-nightlies.zip. Put freej2me.jar into emulators/freej2me-plus/freej2me.jar if installing manually."
     }
   ]
 }

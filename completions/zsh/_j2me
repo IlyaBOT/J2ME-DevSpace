@@ -63,6 +63,7 @@ _j2me() {
     '-h:show help'
     '--version:show version'
     '-V:show version'
+    '--update:check GitHub Releases and self-update'
     '--workspace:manage workspace'
     '--project:manage projects'
     '-P:manage projects'
@@ -76,6 +77,7 @@ _j2me() {
   )
   workspace_actions=(
     'setup:create workspace'
+    'update:update workspace templates'
     'remove:remove workspace-owned content'
     'info:show workspace info'
   )
@@ -111,7 +113,7 @@ _j2me() {
         3) _describe 'workspace action' workspace_actions ;;
         4)
           case "$words[3]" in
-            setup|remove) _files -/ ;;
+            setup|update|remove) _files -/ ;;
           esac
           ;;
         *) _arguments '--yes[skip remove confirmation]' ;;

@@ -24,7 +24,7 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 #ifndef J2ME_CLI_VERSION
-#define J2ME_CLI_VERSION "0.1b"
+#define J2ME_CLI_VERSION "0.3"
 #endif
 
 #ifndef J2ME_INSTALL_DATADIR
@@ -39,6 +39,7 @@ struct AppMeta {
     std::string channel = "beta";
     std::string codename = "Vector";
     std::string defaultProfile = "lg-gs290";
+    std::string githubRepository = "IlyaBOT/J2ME-DevSpace";
 };
 
 struct PackageOption {
@@ -54,6 +55,8 @@ struct PackageOption {
     std::string archive;
     std::string manualUrl;
     std::string notes;
+    std::vector<std::string> supportedOs;
+    std::vector<std::string> supportedArch;
     bool selectedByDefault = false;
     bool manual = false;
 };
@@ -320,6 +323,7 @@ static AppMeta loadAppMeta(const fs::path &toolHome) {
         m.channel = yamlScalar(y, "channel", m.channel);
         m.codename = yamlScalar(y, "codename", m.codename);
         m.defaultProfile = yamlScalar(y, "default_profile", m.defaultProfile);
+        m.githubRepository = yamlScalar(y, "github_repository", m.githubRepository);
     } catch (const std::exception &e) {
         std::cerr << "Warning: failed to read " << metaPath << ": " << e.what() << "\n";
     }
@@ -439,9 +443,45 @@ static std::string expandPackageUrl(std::string url) {
     return url;
 }
 
+static std::string defaultArchiveNameForPackage(const PackageOption &pkg, const std::string &current) {
+    if (pkg.id == "temurin-jdk8") {
+        std::string ext = hostOsToken() == "windows" ? ".zip" : ".tar.gz";
+        return "OpenJDK8U-jdk_" + hostArchToken() + "_" + hostOsToken() + "_hotspot_8u492b09" + ext;
+    }
+    return current;
+}
+
+static std::string defaultDownloadUrlForPackage(const PackageOption &pkg, const std::string &archiveName) {
+    if (pkg.id == "temurin-jdk8") {
+        return "https://github.com/adoptium/temurin8-binaries/releases/download/jdk8u492-b09/" + archiveName;
+    }
+    if (pkg.id == "apache-ant") {
+        return "https://archive.apache.org/dist/ant/binaries/apache-ant-1.10.16-bin.zip";
+    }
+    if (pkg.id == "proguard") {
+        return "https://github.com/Guardsquare/proguard/releases/download/v7.9.1/proguard-7.9.1.zip";
+    }
+    if (pkg.id == "microemulator") {
+        return "https://sourceforge.net/projects/microemulator/files/microemulator/2.0.4/microemulator-2.0.4.zip/download";
+    }
+    return "";
+}
+
+static std::string defaultMirrorUrlForPackage(const PackageOption &pkg, const std::string &archiveName) {
+    if (pkg.type == "emulator") {
+        return "https://ibifs.ddns.net/%D0%9F%D1%80%D0%BE%D1%87%D0%B5%D0%B5/j2me-devspace/emulators/" + archiveName;
+    }
+    if (pkg.type == "jdk" || pkg.type == "ant" || pkg.type == "proguard" || pkg.type == "wtk") {
+        return "https://ibifs.ddns.net/%D0%9F%D1%80%D0%BE%D1%87%D0%B5%D0%B5/j2me-devspace/sdk/" + archiveName;
+    }
+    return "";
+}
+
 static std::vector<PackageOption> readPackageIndex(const fs::path &ws) {
     std::vector<PackageOption> out;
-    json idx = readJsonFile(ws / "packages" / "index.example.json");
+    fs::path indexPath = ws / "packages" / "index.json";
+    if (!fs::exists(indexPath)) indexPath = ws / "packages" / "index.example.json";
+    json idx = readJsonFile(indexPath);
     if (!idx.is_object() || jstr(idx, "schema") != "j2me.packages/1" || !idx.contains("packages") || !idx.at("packages").is_array()) {
         return out;
     }
@@ -460,6 +500,8 @@ static std::vector<PackageOption> readPackageIndex(const fs::path &ws) {
         opt.archive = jstr(p, "archive");
         opt.manualUrl = jstr(p, "manual_url");
         opt.notes = jstr(p, "notes");
+        opt.supportedOs = jsonArrayStrings(p, "supported_os");
+        opt.supportedArch = jsonArrayStrings(p, "supported_arch");
         opt.selectedByDefault = p.contains("default") && p.at("default").is_boolean() && p.at("default").get<bool>();
         opt.manual = p.contains("manual") && p.at("manual").is_boolean() && p.at("manual").get<bool>();
         if (!opt.id.empty() && !opt.type.empty() && !opt.version.empty()) out.push_back(opt);
@@ -467,9 +509,19 @@ static std::vector<PackageOption> readPackageIndex(const fs::path &ws) {
     return out;
 }
 
+static bool stringListContains(const std::vector<std::string> &xs, const std::string &x) {
+    return std::find(xs.begin(), xs.end(), x) != xs.end();
+}
+
+static bool packageSupportedOnHost(const PackageOption &pkg) {
+    if (!pkg.supportedOs.empty() && !stringListContains(pkg.supportedOs, hostOsToken())) return false;
+    if (!pkg.supportedArch.empty() && !stringListContains(pkg.supportedArch, hostArchToken())) return false;
+    return true;
+}
+
 static std::vector<PackageOption> packagesByType(const std::vector<PackageOption> &all, const std::string &type) {
     std::vector<PackageOption> out;
-    for (const auto &p : all) if (p.type == type) out.push_back(p);
+    for (const auto &p : all) if (p.type == type && packageSupportedOnHost(p)) out.push_back(p);
     return out;
 }
 
@@ -508,9 +560,9 @@ static int installCurrentLink(const fs::path &base, const fs::path &versionDir) 
 static int downloadFile(const std::string &url, const fs::path &dest) {
     fs::create_directories(dest.parent_path());
 #ifdef _WIN32
-    std::string cmd = "curl.exe -L --fail --retry 3 -o " + shellQuote(dest) + " " + shellQuote(url);
+    std::string cmd = "curl.exe -L --fail --retry 3 -A j2me-devspace -o " + shellQuote(dest) + " " + shellQuote(url);
 #else
-    std::string cmd = "curl -L --fail --retry 3 -o " + shellQuote(dest) + " " + shellQuote(url);
+    std::string cmd = "curl -L --fail --retry 3 -A j2me-devspace -o " + shellQuote(dest) + " " + shellQuote(url);
 #endif
     return runCommand(cmd);
 }
@@ -581,14 +633,21 @@ static int installPackage(const fs::path &ws, const PackageOption &pkg) {
         archiveName += ".tar.gz";
 #endif
     }
+    archiveName = defaultArchiveNameForPackage(pkg, archiveName);
     std::string url = expandPackageUrl(!pkg.url.empty() ? pkg.url : pkg.urlTemplate);
     url = replaceAll(url, "{archive}", archiveName);
+    if (url.empty()) url = defaultDownloadUrlForPackage(pkg, archiveName);
+    std::string mirrorUrl = expandPackageUrl(!pkg.mirrorUrl.empty() ? pkg.mirrorUrl : pkg.mirrorUrlTemplate);
+    mirrorUrl = replaceAll(mirrorUrl, "{archive}", archiveName);
+    if (mirrorUrl.empty()) mirrorUrl = defaultMirrorUrlForPackage(pkg, archiveName);
+    if (url.empty() && !mirrorUrl.empty()) {
+        url = mirrorUrl;
+        mirrorUrl.clear();
+    }
     if (url.empty()) {
         std::cerr << "No download URL for " << packageDisplayName(pkg) << "\n";
         return 2;
     }
-    std::string mirrorUrl = expandPackageUrl(!pkg.mirrorUrl.empty() ? pkg.mirrorUrl : pkg.mirrorUrlTemplate);
-    mirrorUrl = replaceAll(mirrorUrl, "{archive}", archiveName);
     fs::path archivePath = ws / "cache" / archiveName;
     fs::path extractDir = ws / "temp" / ("extract-" + pkg.id + "-" + pkg.version);
     std::error_code ec;
@@ -598,6 +657,36 @@ static int installPackage(const fs::path &ws, const PackageOption &pkg) {
     std::cout << "URL: " << url << "\n";
     if (!mirrorUrl.empty()) std::cout << "Mirror: " << mirrorUrl << "\n";
     if (int rc = downloadFileWithMirror(url, mirrorUrl, archivePath)) return rc;
+
+    if (endsWith(archiveName, ".bin.sh") || endsWith(archiveName, ".sh")) {
+        fs::create_directories(dest);
+        fs::path installer = dest / archiveName;
+        fs::copy_file(archivePath, installer, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "Failed to store installer script in " << dest << ": " << ec.message() << "\n";
+            return 2;
+        }
+#ifndef _WIN32
+        fs::permissions(installer,
+                        fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                        fs::perm_options::add,
+                        ec);
+#endif
+        writeJsonFile(dest / "j2me.package.json", json{
+            {"schema", "j2me.package/1"},
+            {"id", pkg.id},
+            {"type", pkg.type},
+            {"version", pkg.version},
+            {"source", pkg.source},
+            {"url", url},
+            {"installer_only", true},
+            {"installer", archiveName}
+        });
+        installCurrentLink(base, dest);
+        std::cout << "Downloaded installer script: " << installer << "\n";
+        std::cout << "This legacy package still requires running the vendor installer manually.\n";
+        return 0;
+    }
 
     std::cout << "Extracting to " << dest << "\n";
     if (int rc = extractArchivePortable(archivePath, extractDir)) return rc;
@@ -653,15 +742,22 @@ static int installEmulatorPackage(const fs::path &ws, const PackageOption &pkg) 
         fs::remove_all(dest, ec);
     }
 
+    std::string archiveName = pkg.archive.empty() ? packageDisplayName(pkg) + ".zip" : expandPackageUrl(pkg.archive);
+    archiveName = defaultArchiveNameForPackage(pkg, archiveName);
     std::string url = expandPackageUrl(!pkg.url.empty() ? pkg.url : pkg.urlTemplate);
+    url = replaceAll(url, "{archive}", archiveName);
+    if (url.empty()) url = defaultDownloadUrlForPackage(pkg, archiveName);
+    std::string mirrorUrl = expandPackageUrl(!pkg.mirrorUrl.empty() ? pkg.mirrorUrl : pkg.mirrorUrlTemplate);
+    mirrorUrl = replaceAll(mirrorUrl, "{archive}", archiveName);
+    if (mirrorUrl.empty()) mirrorUrl = defaultMirrorUrlForPackage(pkg, archiveName);
+    if (url.empty() && !mirrorUrl.empty()) {
+        url = mirrorUrl;
+        mirrorUrl.clear();
+    }
     if (url.empty()) {
         std::cerr << "No download URL for " << packageDisplayName(pkg) << "\n";
         return 2;
     }
-
-    std::string archiveName = pkg.archive.empty() ? packageDisplayName(pkg) + ".zip" : expandPackageUrl(pkg.archive);
-    std::string mirrorUrl = expandPackageUrl(!pkg.mirrorUrl.empty() ? pkg.mirrorUrl : pkg.mirrorUrlTemplate);
-    mirrorUrl = replaceAll(mirrorUrl, "{archive}", archiveName);
     fs::path archivePath = ws / "cache" / archiveName;
     fs::path extractDir = ws / "temp" / ("extract-" + pkg.id + "-" + pkg.version);
     std::error_code ec;
@@ -702,6 +798,212 @@ static int installEmulatorPackage(const fs::path &ws, const PackageOption &pkg) 
     return 0;
 }
 
+static fs::path resolveExecutablePath(const char *argv0) {
+    fs::path exe = argv0 ? fs::path(argv0) : fs::path();
+    if (exe.empty()) return {};
+    if (exe.is_absolute() || exe.has_parent_path()) return absPath(exe);
+
+    const char *pathEnv = std::getenv("PATH");
+    if (!pathEnv) return absPath(exe);
+    std::stringstream ss(pathEnv);
+    std::string dir;
+#ifdef _WIN32
+    const char sep = ';';
+    const std::string exeName = exe.string().find(".exe") == std::string::npos ? exe.string() + ".exe" : exe.string();
+#else
+    const char sep = ':';
+    const std::string exeName = exe.string();
+#endif
+    while (std::getline(ss, dir, sep)) {
+        fs::path candidate = fs::path(dir) / exeName;
+        if (fs::exists(candidate)) return absPath(candidate);
+    }
+    return absPath(exe);
+}
+
+static std::vector<int> parseVersionParts(std::string v) {
+    if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) v.erase(v.begin());
+    for (char &c : v) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) c = '.';
+    }
+    std::vector<int> out;
+    std::stringstream ss(v);
+    std::string part;
+    while (std::getline(ss, part, '.')) {
+        if (!part.empty()) out.push_back(std::stoi(part));
+    }
+    while (out.size() < 3) out.push_back(0);
+    return out;
+}
+
+static int compareVersions(const std::string &a, const std::string &b) {
+    auto av = parseVersionParts(a);
+    auto bv = parseVersionParts(b);
+    size_t n = std::max(av.size(), bv.size());
+    av.resize(n);
+    bv.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (av[i] < bv[i]) return -1;
+        if (av[i] > bv[i]) return 1;
+    }
+    return 0;
+}
+
+static std::string updateAssetNameForHost() {
+    if (hostOsToken() == "linux") return "j2me-devspace-linux-x64.zip";
+    if (hostOsToken() == "mac") return "j2me-devspace-macos-x64.zip";
+    if (hostOsToken() == "windows") return "j2me-devspace-windows-x64.zip";
+    return "";
+}
+
+static bool isConfigFile(const fs::path &p) {
+    std::string ext = p.extension().string();
+    return ext == ".json" || ext == ".yml" || ext == ".yaml";
+}
+
+static void backupConfigIfNeeded(const fs::path &dest) {
+    if (!fs::exists(dest) || !isConfigFile(dest)) return;
+    fs::path backup(dest.string() + ".bak");
+    std::error_code ec;
+    fs::copy_file(dest, backup, fs::copy_options::overwrite_existing, ec);
+}
+
+static int copyReleaseTree(const fs::path &from, const fs::path &toolHome, const fs::path &exePath) {
+    std::error_code ec;
+    for (auto &entry : fs::recursive_directory_iterator(from)) {
+        auto rel = fs::relative(entry.path(), from, ec);
+        if (ec || rel.empty()) continue;
+        if (rel == fs::path("j2me") || rel == fs::path("j2me.exe")) continue;
+
+        fs::path dest = toolHome / rel;
+        if (entry.is_directory()) {
+            fs::create_directories(dest, ec);
+        } else if (entry.is_regular_file()) {
+            fs::create_directories(dest.parent_path(), ec);
+            backupConfigIfNeeded(dest);
+            fs::copy_file(entry.path(), dest, fs::copy_options::overwrite_existing, ec);
+            if (ec) {
+                std::cerr << "Failed to update " << dest << ": " << ec.message() << "\n";
+                return 2;
+            }
+        }
+    }
+
+    fs::path newExe = from / (hostOsToken() == "windows" ? "j2me.exe" : "j2me");
+    if (fs::exists(newExe) && !exePath.empty()) {
+        fs::path exeBackup = exePath.string() + ".bak";
+        fs::copy_file(exePath, exeBackup, fs::copy_options::overwrite_existing, ec);
+        ec.clear();
+        fs::copy_file(newExe, exePath, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "Failed to replace executable " << exePath << ": " << ec.message() << "\n";
+            return 2;
+        }
+#ifndef _WIN32
+        fs::permissions(exePath,
+                        fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                        fs::perm_options::add,
+                        ec);
+#endif
+    }
+    return 0;
+}
+
+static void updateInstalledCompletions(const fs::path &releaseRoot, const fs::path &toolHome) {
+    if (toolHome.filename().string() != "j2me-devspace") return;
+
+    fs::path shareDir = toolHome.parent_path();
+    std::vector<std::pair<fs::path, fs::path>> files = {
+        {releaseRoot / "completions" / "bash" / "j2me", shareDir / "bash-completion" / "completions" / "j2me"},
+        {releaseRoot / "completions" / "zsh" / "_j2me", shareDir / "zsh" / "site-functions" / "_j2me"},
+        {releaseRoot / "completions" / "fish" / "j2me.fish", shareDir / "fish" / "vendor_completions.d" / "j2me.fish"}
+    };
+
+    std::error_code ec;
+    for (const auto &[src, dest] : files) {
+        if (!fs::exists(src)) continue;
+        fs::create_directories(dest.parent_path(), ec);
+        fs::copy_file(src, dest, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            std::cerr << "Warning: failed to update completion file " << dest << ": " << ec.message() << "\n";
+            ec.clear();
+        }
+    }
+}
+
+static int selfUpdate(const fs::path &toolHome, const AppMeta &meta, const char *argv0) {
+    std::string api = "https://api.github.com/repos/" + meta.githubRepository + "/releases/latest";
+    fs::path tempBase = fs::temp_directory_path() / ("j2me-devspace-update-" + std::to_string(std::time(nullptr)));
+    fs::path releaseJson = tempBase / "release.json";
+    fs::path archive = tempBase / "release.zip";
+    fs::path extractDir = tempBase / "extract";
+    fs::create_directories(tempBase);
+
+    std::cout << "Checking GitHub Releases: " << api << "\n";
+    if (int rc = downloadFile(api, releaseJson)) {
+        std::cerr << "Could not read latest GitHub Release. The repository may not have published releases yet.\n";
+        return rc;
+    }
+
+    auto release = readJsonFileStrict(releaseJson);
+    if (!release || !release->is_object()) {
+        std::cerr << "Failed to parse GitHub release metadata.\n";
+        return 2;
+    }
+    std::string latest = jstr(*release, "tag_name");
+    if (!latest.empty() && latest[0] == 'v') latest.erase(latest.begin());
+    if (latest.empty()) {
+        std::cerr << "GitHub release does not contain tag_name.\n";
+        return 2;
+    }
+
+    std::cout << "Current version: " << meta.version << "\n";
+    std::cout << "Latest version:  " << latest << "\n";
+    if (compareVersions(meta.version, latest) >= 0) {
+        std::cout << "Already up to date.\n";
+        return 0;
+    }
+
+    std::string wanted = updateAssetNameForHost();
+    std::string assetUrl;
+    if (release->contains("assets") && release->at("assets").is_array()) {
+        for (const auto &asset : release->at("assets")) {
+            if (!asset.is_object()) continue;
+            if (jstr(asset, "name") == wanted) {
+                assetUrl = jstr(asset, "browser_download_url");
+                break;
+            }
+        }
+    }
+    if (assetUrl.empty()) {
+        std::cerr << "No release asset found for this host: " << wanted << "\n";
+        return 2;
+    }
+
+    std::cout << "Download: " << assetUrl << "\n";
+    std::cout << "Install update? [y/N]: ";
+    std::string answer;
+    std::getline(std::cin, answer);
+    if (trim(answer) != "y" && trim(answer) != "Y") {
+        std::cout << "Cancelled.\n";
+        return 0;
+    }
+
+    if (int rc = downloadFile(assetUrl, archive)) return rc;
+    if (int rc = extractArchivePortable(archive, extractDir)) return rc;
+    fs::path root = singleExtractedRoot(extractDir);
+    if (root.empty() || !fs::exists(root)) {
+        std::cerr << "Release archive did not contain an installable directory.\n";
+        return 2;
+    }
+
+    fs::path exePath = resolveExecutablePath(argv0);
+    if (int rc = copyReleaseTree(root, toolHome, exePath)) return rc;
+    updateInstalledCompletions(root, toolHome);
+    std::cout << "Updated J2ME DevSpace to " << latest << ".\n";
+    return 0;
+}
+
 static bool copyDirIfExists(const fs::path &from, const fs::path &to) {
     std::error_code ec;
     if (!fs::exists(from)) return false;
@@ -710,6 +1012,41 @@ static bool copyDirIfExists(const fs::path &from, const fs::path &to) {
         auto rel = fs::relative(entry.path(), from, ec);
         if (ec) continue;
         auto dest = to / rel;
+        if (entry.is_directory()) {
+            fs::create_directories(dest, ec);
+        } else if (entry.is_regular_file()) {
+            fs::create_directories(dest.parent_path(), ec);
+            fs::copy_file(entry.path(), dest, fs::copy_options::overwrite_existing, ec);
+        }
+    }
+    return true;
+}
+
+static std::string normalizeTemplateFilename(std::string name) {
+    size_t pos = name.rfind(".example.");
+    if (pos != std::string::npos) {
+        name.replace(pos, std::string(".example").size(), "");
+    }
+    pos = name.rfind(".template.");
+    if (pos != std::string::npos) {
+        name.replace(pos, std::string(".template").size(), "");
+    }
+    return name;
+}
+
+static bool copyTemplateDirIfExists(const fs::path &from, const fs::path &to) {
+    std::error_code ec;
+    if (!fs::exists(from)) return false;
+    fs::create_directories(to, ec);
+    for (auto &entry : fs::recursive_directory_iterator(from)) {
+        auto rel = fs::relative(entry.path(), from, ec);
+        if (ec) continue;
+
+        fs::path normalizedRel;
+        for (const auto &part : rel) {
+            normalizedRel /= normalizeTemplateFilename(part.string());
+        }
+        auto dest = to / normalizedRel;
         if (entry.is_directory()) {
             fs::create_directories(dest, ec);
         } else if (entry.is_regular_file()) {
@@ -823,7 +1160,9 @@ static void cmdHelp(const AppMeta &meta) {
     std::cout << formatAppVersion(meta) << "\n"
               << "Usage:\n"
               << "  j2me --version | -V\n"
+              << "  j2me --update\n"
               << "  j2me --workspace setup [DIR]\n"
+              << "  j2me --workspace update [DIR]\n"
               << "  j2me --workspace remove [DIR] [--yes]\n"
               << "  j2me --workspace info\n"
               << "  j2me --project create <NAME> | -P create <NAME>\n"
@@ -844,6 +1183,7 @@ static int cmdExampleUsage(const std::string &group) {
     std::cerr << "Example Usage:\n";
     if (group == "--workspace") {
         std::cerr << "  j2me --workspace setup [DIR]\n"
+                  << "  j2me --workspace update [DIR]\n"
                   << "  j2me --workspace remove [DIR] [--yes]\n"
                   << "  j2me --workspace info\n";
         return 2;
@@ -903,12 +1243,12 @@ static int workspaceSetup(const fs::path &toolHome, const AppMeta &meta, const f
     fs::create_directories(target / "emulators" / "freej2me-plus");
     fs::create_directories(target / "emulators" / "microemulator");
 
-    copyDirIfExists(toolHome / "templates" / "tools", target / "tools");
-    copyDirIfExists(toolHome / "templates" / "profiles", target / "profiles");
-    copyDirIfExists(toolHome / "templates" / "packages", target / "packages");
+    copyTemplateDirIfExists(toolHome / "templates" / "tools", target / "tools");
+    copyTemplateDirIfExists(toolHome / "templates" / "profiles", target / "profiles");
+    copyTemplateDirIfExists(toolHome / "templates" / "packages", target / "packages");
     fs::path demoProject = target / "projects" / "j2me_devspace-demo";
     if (!fs::exists(demoProject)) {
-        copyDirIfExists(toolHome / "templates" / "project" / "app" / "demo", demoProject);
+        copyTemplateDirIfExists(toolHome / "templates" / "project" / "app" / "demo", demoProject);
     }
     if (fs::exists(toolHome / "templates" / "README.workspace.md")) {
         fs::copy_file(toolHome / "templates" / "README.workspace.md", target / "README.workspace.md", fs::copy_options::overwrite_existing);
@@ -920,6 +1260,79 @@ static int workspaceSetup(const fs::path &toolHome, const AppMeta &meta, const f
     std::cout << "Workspace ready: " << target << "\n";
     std::cout << "Demo project: projects/j2me_devspace-demo\n";
     std::cout << "Next:\n  cd " << target << "\n  j2me --workspace info\n";
+    return 0;
+}
+
+static int workspaceUpdate(const fs::path &toolHome, const AppMeta &meta, const fs::path &targetArg) {
+    fs::path target = targetArg.empty() ? findWorkspaceRoot() : absPath(targetArg);
+    if (target.empty()) {
+        std::cerr << "J2ME workspace not found. Run inside a workspace or pass workspace directory:\n"
+                  << "  j2me --workspace update <directory>\n";
+        return 2;
+    }
+
+    fs::path marker = target / "j2me.workspace.json";
+    auto markerJson = readJsonFileStrict(marker, "j2me.workspace/1");
+    if (!markerJson) {
+        std::cerr << "Not a J2ME DevSpace workspace: " << target << "\n";
+        return 2;
+    }
+
+    for (const auto &d : workspaceOwnedDirs()) fs::create_directories(target / d);
+    fs::create_directories(target / "sdk" / "jdk");
+    fs::create_directories(target / "sdk" / "wtk");
+    fs::create_directories(target / "sdk" / "ant");
+    fs::create_directories(target / "sdk" / "proguard");
+    fs::create_directories(target / "emulators" / "freej2me-plus");
+    fs::create_directories(target / "emulators" / "microemulator");
+
+    copyTemplateDirIfExists(toolHome / "templates" / "tools", target / "tools");
+    copyTemplateDirIfExists(toolHome / "templates" / "profiles", target / "profiles");
+    copyTemplateDirIfExists(toolHome / "templates" / "packages", target / "packages");
+    fs::remove(target / "packages" / "index.example.json");
+
+    fs::path demoProject = target / "projects" / "j2me_devspace-demo";
+    if (!fs::exists(demoProject)) {
+        copyTemplateDirIfExists(toolHome / "templates" / "project" / "app" / "demo", demoProject);
+    }
+    if (fs::exists(toolHome / "templates" / "README.workspace.md")) {
+        fs::copy_file(toolHome / "templates" / "README.workspace.md", target / "README.workspace.md", fs::copy_options::overwrite_existing);
+    }
+    if (!fs::exists(target / "profiles" / "lg-gs290.json")) {
+        writeJsonFile(target / "profiles" / "lg-gs290.json", defaultProfileJson());
+    }
+
+    json updated = *markerJson;
+    updated["updated_at"] = nowIsoLocal();
+    updated["updated_by"] = {
+        {"name", meta.name},
+        {"version", meta.version},
+        {"channel", meta.channel},
+        {"codename", meta.codename}
+    };
+    writeJsonFile(marker, updated);
+
+    std::vector<std::string> expected = workspaceOwnedDirs();
+    std::sort(expected.begin(), expected.end());
+    for (const auto &entry : fs::directory_iterator(target)) {
+        if (!entry.is_directory()) continue;
+        std::string name = entry.path().filename().string();
+        if (name.empty() || name[0] == '.') continue;
+        if (std::binary_search(expected.begin(), expected.end(), name)) continue;
+
+        std::cout << "Extra directory found: " << name << "\n";
+        std::cout << "Delete it? [y/N]: ";
+        std::string answer;
+        std::getline(std::cin, answer);
+        if (trim(answer) == "y" || trim(answer) == "Y") {
+            fs::remove_all(entry.path());
+            std::cout << "Removed: " << name << "\n";
+        } else {
+            std::cout << "Kept: " << name << "\n";
+        }
+    }
+
+    std::cout << "Workspace updated: " << target << "\n";
     return 0;
 }
 
@@ -1219,7 +1632,7 @@ static int sdkSetup(const fs::path &ws) {
 
     std::vector<PackageOption> all = readPackageIndex(ws);
     if (all.empty()) {
-        std::cerr << "Package index not found or invalid: " << (ws / "packages" / "index.example.json") << "\n";
+        std::cerr << "Package index not found or invalid: " << (ws / "packages" / "index.json") << "\n";
         return 2;
     }
 
@@ -1596,7 +2009,7 @@ static int emulatorSetup(const fs::path &ws) {
     std::vector<PackageOption> all = readPackageIndex(ws);
     auto opts = packagesByType(all, "emulator");
     if (opts.empty()) {
-        std::cerr << "No emulator packages found in " << (ws / "packages" / "index.example.json") << "\n";
+        std::cerr << "No emulator packages found in " << (ws / "packages" / "index.json") << "\n";
         return 2;
     }
 
@@ -1713,6 +2126,7 @@ int main(int argc, char **argv) {
 
     if (args.empty() || hasArg(args, "--help") || hasArg(args, "-h")) { cmdHelp(meta); return 0; }
     if (hasArg(args, "--version") || hasArg(args, "-V")) { std::cout << formatAppVersion(meta) << "\n"; return 0; }
+    if (args[0] == "--update") return selfUpdate(toolHome, meta, argc > 0 ? argv[0] : nullptr);
 
     if (args.size() == 1 && (
         args[0] == "--workspace" ||
@@ -1729,6 +2143,11 @@ int main(int argc, char **argv) {
             fs::path dir;
             if (args.size() >= 3 && args[2].rfind("--", 0) != 0) dir = args[2];
             return workspaceSetup(toolHome, meta, dir);
+        }
+        if (action == "update") {
+            fs::path dir;
+            if (args.size() >= 3 && args[2].rfind("--", 0) != 0) dir = args[2];
+            return workspaceUpdate(toolHome, meta, dir);
         }
         if (action == "remove") {
             fs::path dir;

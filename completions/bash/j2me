@@ -68,7 +68,7 @@ _j2me_complete() {
                 return 0
                 ;;
             *)
-                COMPREPLY=($(compgen -W "--help --version --workspace --project --sdk --tools --build --emulator --run" -- "$cur"))
+                COMPREPLY=($(compgen -W "--help --version --update --workspace --project --sdk --tools --build --emulator --run" -- "$cur"))
                 return 0
                 ;;
         esac
@@ -88,10 +88,10 @@ _j2me_complete() {
     case "$root" in
         --workspace)
             case "$COMP_CWORD" in
-                2) COMPREPLY=($(compgen -W "setup remove info" -- "$cur")) ;;
+                2) COMPREPLY=($(compgen -W "setup update remove info" -- "$cur")) ;;
                 3)
                     case "$sub" in
-                        setup|remove) COMPREPLY=($(compgen -d -- "$cur")) ;;
+                        setup|update|remove) COMPREPLY=($(compgen -d -- "$cur")) ;;
                     esac
                     ;;
                 *) COMPREPLY=($(compgen -W "--yes" -- "$cur")) ;;
@@ -135,7 +135,7 @@ _j2me_complete() {
             fi
             ;;
         *)
-            COMPREPLY=($(compgen -W "--help -h --version -V --workspace --project -P --sdk -S --tools -T --build --emulator --run" -- "$cur"))
+            COMPREPLY=($(compgen -W "--help -h --version -V --update --workspace --project -P --sdk -S --tools -T --build --emulator --run" -- "$cur"))
             ;;
     esac
 }

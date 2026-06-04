@@ -23,4 +23,10 @@ projects/j2me_devspace-demo/
 
 Use it to test build tools, emulator setup and basic MIDP LCDUI widgets on small screens.
 
+Refresh workspace-owned templates after upgrading J2ME DevSpace:
+
+```bash
+j2me --workspace update
+```
+
 Do not delete `j2me.workspace.json` unless you intentionally want this directory to stop being detected as a workspace.

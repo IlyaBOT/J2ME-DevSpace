@@ -1,4 +1,4 @@
-# J2ME DevSpace 0.1b-beta `Vector`
+# J2ME DevSpace
 
 [![Build CLI](https://github.com/IlyaBOT/J2ME-DevSpace/actions/workflows/build-cli.yml/badge.svg)](https://github.com/IlyaBOT/J2ME-DevSpace/actions/workflows/build-cli.yml)
 
@@ -161,17 +161,18 @@ schema: j2me.devspace/1
 name: J2ME DevSpace
 id: j2me-devspace
 cli: j2me
-version: 0.1b
+version: 0.3
 channel: beta
 codename: Vector
 description: Portable CLI environment and workspace manager for Java ME / J2ME MIDP projects.
 default_profile: lg-gs290
+github_repository: IlyaBOT/J2ME-DevSpace
 ```
 
 `j2me --version` prints:
 
 ```text
-J2ME DevSpace 0.1b-beta (Vector)
+J2ME DevSpace 0.3-beta (Vector)
 ```
 
 ## Dependencies
@@ -252,6 +253,12 @@ Show workspace status:
 j2me --workspace info
 ```
 
+Update workspace-owned templates and directory layout:
+
+```bash
+j2me --workspace update
+```
+
 Remove only J2ME DevSpace-owned content from a workspace:
 
 ```bash
@@ -301,12 +308,14 @@ Other files in the same parent directory are not touched.
 
 ## Main commands
 
-All commands except `--version`, `--help` and `--workspace setup/remove` require the terminal to be inside a workspace directory tree.
+All commands except `--version`, `--help`, `--update` and `--workspace setup/update/remove` require the terminal to be inside a workspace directory tree.
 
 ```bash
 j2me --project create MyGame
 j2me --project list
 j2me --project properties MyGame
+j2me --update
+j2me --workspace update
 j2me --sdk setup
 j2me --sdk list
 j2me --tools list
@@ -320,7 +329,7 @@ j2me --run MyGame
 
 ## SDK Setup
 
-`j2me --sdk setup` is an interactive installer. It reads `packages/index.example.json`, asks which package/version to install, shows an installation plan, then downloads and extracts supported packages into:
+`j2me --sdk setup` is an interactive installer. It reads `packages/index.json`, asks which package/version to install, shows an installation plan, then downloads and extracts supported packages into:
 
 ```text
 sdk/jdk/<version>/
@@ -329,11 +338,17 @@ sdk/proguard/<version>/
 sdk/wtk/<version>/
 ```
 
-It also updates `sdk/<type>/current` to point at the selected version. Some legacy packages, such as Sun WTK 2.5.2_01, may require manual download/license acceptance from Oracle and are shown as manual install steps instead of being silently treated as installed.
+It also updates `sdk/<type>/current` to point at the selected version. Some legacy packages, such as Sun WTK 2.5.2_01, are distributed as vendor installer scripts instead of normal zip/tar archives. J2ME DevSpace downloads those scripts into the selected SDK version directory and marks them as `installer_only` instead of pretending a full toolkit was unpacked.
 
 `j2me --emulator setup` uses the same package index for emulator setup. MicroEmulator can be downloaded automatically into `emulators/microemulator/`; FreeJ2ME-Plus is listed as a manual option unless a direct `freej2me.jar` release URL is added to the package index.
 
 Package entries may define `mirror_url` or `mirror_url_template`. If the primary download fails, the installer prints a yellow warning and retries from the j2me-devspace developer mirror.
+
+Template files may use `.example` or `.template` in the repository. When copied into a workspace, those markers are removed from file names. For example, `templates/packages/index.example.json` becomes `packages/index.json`.
+
+## CLI Self-Update
+
+`j2me --update` checks the latest GitHub Release from `github_repository` in `j2me.devspace.yml`. If a newer version exists, it downloads the host-specific release archive, extracts it into a temporary directory, backs up overwritten `.json`, `.yml` and `.yaml` files with `.bak`, and replaces installed files. The current executable is backed up as `j2me.bak` or `j2me.exe.bak` before replacement.
 
 ## Config files
 
@@ -347,7 +362,7 @@ Created by `j2me --workspace setup`:
   "name": "J2ME DevSpace Workspace",
   "created_by": {
     "name": "J2ME DevSpace",
-    "version": "0.1b",
+    "version": "0.3",
     "channel": "beta",
     "codename": "Vector"
   },
@@ -403,11 +418,11 @@ Manifest/JAD include:
 
 ```text
 J2ME-DevSpace-Name: J2ME DevSpace
-J2ME-DevSpace-Version: 0.1b
+J2ME-DevSpace-Version: 0.3
 J2ME-DevSpace-Channel: beta
 J2ME-DevSpace-Codename: Vector
 J2ME-Build-Date: <date>
-J2ME-Build-Info: <Project> built <date> with J2ME DevSpace 0.1b Vector.
+J2ME-Build-Info: <Project> built <date> with J2ME DevSpace 0.3 Vector.
 ```
 
 MIDlets can read descriptor/manifest properties with `getAppProperty("J2ME-Build-Info")`, and generated code can use `BuildInfo.BUILD_INFO`.

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(J2ME_DevSpace VERSION 0.1 LANGUAGES CXX)
+project(J2ME_DevSpace VERSION 0.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,8 +32,8 @@ if(NOT yaml-cpp_FOUND)
     FetchContent_MakeAvailable(yaml-cpp)
 endif()
 
-set(J2ME_CLI_VERSION "0.1b")
-set(J2ME_PACKAGE_VERSION "0.1.0")
+set(J2ME_CLI_VERSION "0.3")
+set(J2ME_PACKAGE_VERSION "0.3.0")
 set(J2ME_INSTALL_DATADIR "${CMAKE_INSTALL_FULL_DATADIR}/j2me-devspace")
 
 add_executable(j2me src/main.cpp)
