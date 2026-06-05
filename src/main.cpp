@@ -1881,7 +1881,10 @@ static std::string antBuildXml(const std::string &projectName, const std::string
     <property name="dist.dir" value="dist"/>
     <property name="manifest.file" value="build/generated/MANIFEST.MF"/>
     <property name="jar.file" value="dist/)XML" + jarName + R"XML("/>
-    <property name="wtk.home" value="${env.WTK_HOME}"/>
+    <property name="cldc.jar" value="${env.J2ME_CLDC_JAR}"/>
+    <property name="midp.jar" value="${env.J2ME_MIDP_JAR}"/>
+    <property name="preverify.exe" value="${env.J2ME_PREVERIFY_EXE}"/>
+    <property name="preverify.enabled" value="${env.J2ME_PREVERIFY_ENABLED}"/>
 
     <target name="clean">
         <delete dir="${classes.dir}"/>
@@ -1891,28 +1894,45 @@ static std::string antBuildXml(const std::string &projectName, const std::string
 
     <target name="compile">
         <mkdir dir="${classes.dir}"/>
-        <javac destdir="${classes.dir}" includeantruntime="false" source="1.3" target="1.1">
+        <javac destdir="${classes.dir}" includeantruntime="false" source="8" target="8">
             <src path="${src.dir}"/>
             <src path="${generated.src.dir}"/>
             <classpath>
-                <pathelement location="${wtk.home}/lib/cldcapi11.jar"/>
-                <pathelement location="${wtk.home}/lib/midpapi21.jar"/>
+                <pathelement location="${cldc.jar}"/>
+                <pathelement location="${midp.jar}"/>
             </classpath>
         </javac>
     </target>
 
-    <target name="preverify" depends="compile">
+    <target name="detect-preverify" depends="compile">
+        <condition property="preverify.available">
+            <and>
+                <equals arg1="${preverify.enabled}" arg2="true"/>
+                <available file="${preverify.exe}"/>
+            </and>
+        </condition>
+    </target>
+
+    <target name="preverify" depends="detect-preverify" if="preverify.available">
         <mkdir dir="${preverified.dir}"/>
-        <exec executable="${wtk.home}/bin/preverify" failonerror="true">
+        <exec executable="${preverify.exe}" failonerror="true">
             <arg value="-classpath"/>
-            <arg value="${wtk.home}/lib/cldcapi11.jar${path.separator}${wtk.home}/lib/midpapi21.jar${path.separator}${classes.dir}"/>
+            <arg value="${cldc.jar}${path.separator}${midp.jar}${path.separator}${classes.dir}"/>
             <arg value="-d"/>
             <arg value="${preverified.dir}"/>
             <arg value="${classes.dir}"/>
         </exec>
     </target>
 
-    <target name="dist" depends="preverify">
+    <target name="copy-unpreverified" depends="detect-preverify" unless="preverify.available">
+        <mkdir dir="${preverified.dir}"/>
+        <copy todir="${preverified.dir}">
+            <fileset dir="${classes.dir}"/>
+        </copy>
+        <echo message="Warning: WTK preverify is not available; produced emulator/development JAR only."/>
+    </target>
+
+    <target name="dist" depends="preverify,copy-unpreverified">
         <mkdir dir="${dist.dir}"/>
         <jar destfile="${jar.file}" manifest="${manifest.file}">
             <fileset dir="${preverified.dir}"/>
@@ -1924,6 +1944,19 @@ static std::string antBuildXml(const std::string &projectName, const std::string
 }
 
 static int runProject(const fs::path &ws, const std::string &projectArg, const std::string &profileArg);
+
+static fs::path resolveJavaHome(const fs::path &candidate) {
+    if (candidate.empty() || !fs::exists(candidate)) return {};
+    fs::path javaBin = "bin";
+#ifdef _WIN32
+    fs::path javaExe = javaBin / "java.exe";
+#else
+    fs::path javaExe = javaBin / "java";
+#endif
+    if (fs::exists(candidate / javaExe)) return candidate;
+    if (fs::exists(candidate / "Contents" / "Home" / javaExe)) return candidate / "Contents" / "Home";
+    return {};
+}
 
 static int buildProject(const fs::path &ws, const AppMeta &meta, const std::string &projectArg, const std::string &profileArg, const std::string &jdkArg, bool runAfter) {
     if (!projectArg.empty() && rejectUnsafeName("project", projectArg)) return 2;
@@ -1977,16 +2010,62 @@ static int buildProject(const fs::path &ws, const AppMeta &meta, const std::stri
     std::string antCmd = fs::exists(ant) ? shellQuote(ant) : "ant";
 
     fs::path wtk = ws / "sdk" / "wtk" / "current";
+    fs::path jdkHome = resolveJavaHome(!jdkArg.empty() ? (ws / "sdk" / "jdk" / jdkArg) : (ws / "sdk" / "jdk" / "current"));
+    fs::path cldcJar;
+    fs::path midpJar;
+    fs::path preverifyExe;
+    bool preverifyEnabled = false;
+
+    fs::path wtkCldc = wtk / "lib" / "cldcapi11.jar";
+    fs::path wtkMidp21 = wtk / "lib" / "midpapi21.jar";
+    fs::path wtkMidp20 = wtk / "lib" / "midpapi20.jar";
+    fs::path wtkPreverify = wtk / "bin" / (std::string("preverify")
+#ifdef _WIN32
+        + ".exe"
+#else
+        + ""
+#endif
+    );
+    if (fs::exists(wtkCldc) && (fs::exists(wtkMidp21) || fs::exists(wtkMidp20)) && fs::exists(wtkPreverify)) {
+        cldcJar = wtkCldc;
+        midpJar = fs::exists(wtkMidp21) ? wtkMidp21 : wtkMidp20;
+        preverifyExe = wtkPreverify;
+        preverifyEnabled = true;
+    } else {
+        fs::path microLib = ws / "emulators" / "microemulator" / "lib";
+        fs::path microCldc = microLib / "cldcapi11.jar";
+        fs::path microMidp = microLib / "midpapi20.jar";
+        if (fs::exists(microCldc) && fs::exists(microMidp)) {
+            cldcJar = microCldc;
+            midpJar = microMidp;
+            std::cout << "Warning: WTK is not complete; using MicroEmulator API jars without preverify.\n"
+                      << "This build is for emulator/development use, not a verified phone-ready JAR.\n";
+        }
+    }
+
+    if (cldcJar.empty() || midpJar.empty()) {
+        std::cerr << "No J2ME API jars found.\n"
+                  << "Expected WTK jars in " << (wtk / "lib") << " or MicroEmulator jars in "
+                  << (ws / "emulators" / "microemulator" / "lib") << ".\n"
+                  << "Run: j2me --sdk setup and/or j2me --emulator setup\n";
+        return 2;
+    }
     std::string cmd;
 #ifdef _WIN32
     cmd = "cd /d " + shellQuote(p) + " && ";
-    if (!jdkArg.empty()) cmd += "set \"JAVA_HOME=" + (ws / "sdk" / "jdk" / jdkArg).string() + "\" && ";
-    if (fs::exists(wtk)) cmd += "set \"WTK_HOME=" + wtk.string() + "\" && ";
+    if (!jdkHome.empty()) cmd += "set \"JAVA_HOME=" + jdkHome.string() + "\" && ";
+    cmd += "set \"J2ME_CLDC_JAR=" + cldcJar.string() + "\" && ";
+    cmd += "set \"J2ME_MIDP_JAR=" + midpJar.string() + "\" && ";
+    cmd += "set \"J2ME_PREVERIFY_EXE=" + preverifyExe.string() + "\" && ";
+    cmd += std::string("set \"J2ME_PREVERIFY_ENABLED=") + (preverifyEnabled ? "true" : "false") + "\" && ";
     cmd += antCmd + " clean dist";
 #else
     cmd = "cd " + shellQuote(p) + " && ";
-    if (!jdkArg.empty()) cmd += "JAVA_HOME=" + shellQuote(ws / "sdk" / "jdk" / jdkArg) + " ";
-    if (fs::exists(wtk)) cmd += "WTK_HOME=" + shellQuote(wtk) + " ";
+    if (!jdkHome.empty()) cmd += "JAVA_HOME=" + shellQuote(jdkHome) + " ";
+    cmd += "J2ME_CLDC_JAR=" + shellQuote(cldcJar) + " ";
+    cmd += "J2ME_MIDP_JAR=" + shellQuote(midpJar) + " ";
+    cmd += "J2ME_PREVERIFY_EXE=" + shellQuote(preverifyExe) + " ";
+    cmd += std::string("J2ME_PREVERIFY_ENABLED=") + (preverifyEnabled ? "true" : "false") + " ";
     cmd += antCmd + " clean dist";
 #endif
     int rc = runCommand(cmd);
