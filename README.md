@@ -121,16 +121,6 @@ cpack --config build/CPackConfig.cmake -G RPM
 
 J2ME DevSpace keeps the **CLI SDK source tree** separate from the user's **J2ME workspace**. The repository contains only C++ source code, templates, metadata, CI config and documentation. Real J2ME projects, downloaded SDKs, tools, emulators and build artifacts live in a workspace created by `j2me --workspace setup`.
 
-## Repository description
-
-**Portable CLI workspace manager for Java ME / J2ME MIDP development.**
-
-Suggested GitHub topics:
-
-```text
-j2me java-me midp cldc developer-tools
-```
-
 ## Repository layout
 
 ```text
@@ -342,7 +332,7 @@ It also updates `sdk/<type>/current` to point at the selected version. Some lega
 
 `j2me --emulator setup` uses the same package index for emulator setup. MicroEmulator can be downloaded automatically into `emulators/microemulator/`; FreeJ2ME-Plus is listed as a manual option unless a direct `freej2me.jar` release URL is added to the package index.
 
-Package entries may define `mirror_url` or `mirror_url_template`. If the primary download fails, the installer prints a yellow warning and retries from the j2me-devspace developer mirror.
+Package entries may define `mirror_url` or `mirror_url_template`. If the primary download fails, the installer prints a warning and retries from the j2me-devspace developer mirror.
 
 Template files may use `.example` or `.template` in the repository. When copied into a workspace, those markers are removed from file names. For example, `templates/packages/index.example.json` becomes `packages/index.json`.
 

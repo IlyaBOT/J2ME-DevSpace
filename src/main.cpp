@@ -24,7 +24,7 @@ namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 #ifndef J2ME_CLI_VERSION
-#define J2ME_CLI_VERSION "0.3"
+#define J2ME_CLI_VERSION "0.4"
 #endif
 
 #ifndef J2ME_INSTALL_DATADIR
@@ -821,16 +821,48 @@ static fs::path resolveExecutablePath(const char *argv0) {
     return absPath(exe);
 }
 
+static int letterVersionPart(const std::string &letters) {
+    if (letters.size() != 1 || !std::isalpha(static_cast<unsigned char>(letters[0]))) return -1;
+    return std::tolower(static_cast<unsigned char>(letters[0])) - 'a' + 1;
+}
+
+static std::optional<int> parseVersionNumber(const std::string &part) {
+    try {
+        size_t idx = 0;
+        int n = std::stoi(part, &idx);
+        if (idx == part.size()) return n;
+    } catch (const std::exception &) {}
+    return std::nullopt;
+}
+
 static std::vector<int> parseVersionParts(std::string v) {
     if (!v.empty() && (v[0] == 'v' || v[0] == 'V')) v.erase(v.begin());
-    for (char &c : v) {
-        if (!std::isdigit(static_cast<unsigned char>(c))) c = '.';
-    }
     std::vector<int> out;
-    std::stringstream ss(v);
-    std::string part;
-    while (std::getline(ss, part, '.')) {
-        if (!part.empty()) out.push_back(std::stoi(part));
+    for (size_t i = 0; i < v.size();) {
+        unsigned char c = static_cast<unsigned char>(v[i]);
+        if (std::isdigit(c)) {
+            size_t start = i;
+            while (i < v.size() && std::isdigit(static_cast<unsigned char>(v[i]))) ++i;
+            if (auto n = parseVersionNumber(v.substr(start, i - start))) out.push_back(*n);
+
+            size_t lettersStart = i;
+            while (i < v.size() && std::isalpha(static_cast<unsigned char>(v[i]))) ++i;
+            if (i > lettersStart && out.size() == 2) {
+                int letterPart = letterVersionPart(v.substr(lettersStart, i - lettersStart));
+                if (letterPart > 0) out.push_back(letterPart);
+            }
+            continue;
+        }
+        if (std::isalpha(c)) {
+            size_t start = i;
+            while (i < v.size() && std::isalpha(static_cast<unsigned char>(v[i]))) ++i;
+            if (out.size() == 2) {
+                int letterPart = letterVersionPart(v.substr(start, i - start));
+                if (letterPart > 0) out.push_back(letterPart);
+            }
+            continue;
+        }
+        ++i;
     }
     while (out.size() < 3) out.push_back(0);
     return out;
@@ -847,6 +879,40 @@ static int compareVersions(const std::string &a, const std::string &b) {
         if (av[i] > bv[i]) return 1;
     }
     return 0;
+}
+
+static std::string workspaceVersionFromMarker(const json &marker) {
+    if (!marker.is_object()) return "";
+    if (marker.contains("updated_by") && marker.at("updated_by").is_object()) {
+        std::string version = jstr(marker.at("updated_by"), "version");
+        if (!version.empty()) return version;
+    }
+    if (marker.contains("created_by") && marker.at("created_by").is_object()) {
+        std::string version = jstr(marker.at("created_by"), "version");
+        if (!version.empty()) return version;
+    }
+    return jstr(marker, "version");
+}
+
+static void warnWorkspaceVersionMismatch(const std::string &workspaceVersion, const AppMeta &meta) {
+    if (workspaceVersion.empty()) return;
+    int cmp = compareVersions(workspaceVersion, meta.version);
+    if (cmp < 0) {
+        std::cerr << "\033[33mWarning: this workspace was last updated with J2ME DevSpace "
+                  << workspaceVersion << ", but the current J2ME DevSpace version is "
+                  << meta.version << ".\n"
+                  << "Update the workspace with: j2me --workspace update\033[0m\n";
+    } else if (cmp > 0) {
+        std::cerr << "\033[33mWarning: this workspace was created in a newer version of J2ME DevSpace ("
+                  << workspaceVersion << "). Continuing to use the older j2me-ds version "
+                  << meta.version
+                  << " may cause errors or data corruption in the workspace.\033[0m\n";
+    }
+}
+
+static void warnWorkspaceVersionMismatch(const fs::path &ws, const AppMeta &meta) {
+    json marker = readJsonFile(ws / "j2me.workspace.json");
+    warnWorkspaceVersionMismatch(workspaceVersionFromMarker(marker), meta);
 }
 
 static std::string updateAssetNameForHost() {
@@ -1226,6 +1292,7 @@ static int workspaceSetup(const fs::path &toolHome, const AppMeta &meta, const f
     if (fs::exists(marker)) {
         json old = readJsonFile(marker);
         if (jstr(old, "schema") == "j2me.workspace/1") {
+            warnWorkspaceVersionMismatch(workspaceVersionFromMarker(old), meta);
             std::cout << "Workspace already exists: " << target << "\n";
         } else {
             std::cerr << "Refusing to overwrite foreign j2me.workspace.json in " << target << "\n";
@@ -1277,6 +1344,7 @@ static int workspaceUpdate(const fs::path &toolHome, const AppMeta &meta, const 
         std::cerr << "Not a J2ME DevSpace workspace: " << target << "\n";
         return 2;
     }
+    warnWorkspaceVersionMismatch(workspaceVersionFromMarker(*markerJson), meta);
 
     for (const auto &d : workspaceOwnedDirs()) fs::create_directories(target / d);
     fs::create_directories(target / "sdk" / "jdk");
@@ -1336,15 +1404,17 @@ static int workspaceUpdate(const fs::path &toolHome, const AppMeta &meta, const 
     return 0;
 }
 
-static int workspaceRemove(const fs::path &targetArg, bool yes) {
+static int workspaceRemove(const fs::path &targetArg, bool yes, const AppMeta &meta) {
     fs::path target = targetArg.empty() ? fs::current_path() : targetArg;
     target = absPath(target);
     fs::path marker = target / "j2me.workspace.json";
-    if (!fs::exists(marker) || jstr(readJsonFile(marker), "schema") != "j2me.workspace/1") {
+    json markerJson = readJsonFile(marker);
+    if (!fs::exists(marker) || jstr(markerJson, "schema") != "j2me.workspace/1") {
         std::cerr << "Not a J2ME DevSpace workspace: " << target << "\n";
         std::cerr << "Refusing to delete anything without j2me.workspace.json marker.\n";
         return 2;
     }
+    warnWorkspaceVersionMismatch(workspaceVersionFromMarker(markerJson), meta);
 
     std::cout << "This will remove only J2ME DevSpace-owned content from:\n  " << target << "\n";
     std::cout << "Directories/files:\n";
@@ -2231,14 +2301,20 @@ int main(int argc, char **argv) {
         if (action == "remove") {
             fs::path dir;
             if (args.size() >= 3 && args[2].rfind("--", 0) != 0) dir = args[2];
-            return workspaceRemove(dir, hasArg(args, "--yes"));
+            return workspaceRemove(dir, hasArg(args, "--yes"), meta);
         }
-        if (action == "info") return workspaceInfo(findWorkspaceRoot());
+        if (action == "info") {
+            fs::path ws = findWorkspaceRoot();
+            if (int rc = requireWorkspace(ws)) return rc;
+            warnWorkspaceVersionMismatch(ws, meta);
+            return workspaceInfo(ws);
+        }
         return cmdExampleUsage(args[0]);
     }
 
     fs::path ws = findWorkspaceRoot();
     if (int rc = requireWorkspace(ws)) return rc;
+    warnWorkspaceVersionMismatch(ws, meta);
 
     if ((args[0] == "--project" || args[0] == "-P") && args.size() >= 2) {
         std::string action = args[1];
