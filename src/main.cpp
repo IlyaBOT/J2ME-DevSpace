@@ -1319,10 +1319,6 @@ static int workspaceSetup(const fs::path &toolHome, const AppMeta &meta, const f
     if (!fs::exists(demoProject)) {
         copyTemplateDirIfExists(toolHome / "templates" / "project" / "app" / "demo", demoProject);
     }
-    fs::path gs290TouchProject = target / "projects" / "gs290-touch-test";
-    if (!fs::exists(gs290TouchProject)) {
-        copyTemplateDirIfExists(toolHome / "templates" / "project" / "app" / "gs290-touch-test", gs290TouchProject);
-    }
     if (fs::exists(toolHome / "templates" / "README.workspace.md")) {
         fs::copy_file(toolHome / "templates" / "README.workspace.md", target / "README.workspace.md", fs::copy_options::overwrite_existing);
     }
@@ -1368,10 +1364,6 @@ static int workspaceUpdate(const fs::path &toolHome, const AppMeta &meta, const 
     fs::path demoProject = target / "projects" / "j2me_devspace-demo";
     if (!fs::exists(demoProject)) {
         copyTemplateDirIfExists(toolHome / "templates" / "project" / "app" / "demo", demoProject);
-    }
-    fs::path gs290TouchProject = target / "projects" / "gs290-touch-test";
-    if (!fs::exists(gs290TouchProject)) {
-        copyTemplateDirIfExists(toolHome / "templates" / "project" / "app" / "gs290-touch-test", gs290TouchProject);
     }
     if (fs::exists(toolHome / "templates" / "README.workspace.md")) {
         fs::copy_file(toolHome / "templates" / "README.workspace.md", target / "README.workspace.md", fs::copy_options::overwrite_existing);

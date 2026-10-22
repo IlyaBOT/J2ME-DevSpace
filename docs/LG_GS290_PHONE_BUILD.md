@@ -1,94 +1,60 @@
-# LG GS290: phone-ready J2ME + touchscreen
+# LG GS290: CLDC-compatible builds
 
-**This is not a replacement JRE.** LG GS290 already has AROMA Java ME VM in firmware.
-The PC toolchain must generate CLDC-compatible 45.3 class files with StackMap;
-Java 8 `javac source=8 target=8` produces 52.0 classes and will not run.
+This improves the **PC build environment**, not the AROMA Java runtime in the
+phone's firmware. Earlier builds used Java 8 class files (version 52.0) and
+sometimes skipped CLDC preverification, which can cause an installed MIDlet to
+show "Not supported".
 
-## Confirmed device target
+## Corrected default DevSpace demo
 
-- 240x400 WQVGA resistive touchscreen (LG published specification)
-- CLDC 1.1
-- MIDP 2.1 reported by GS290 firmware; request MIDP 2.0 as minimum for broad compatibility
-- Untrusted MIDlet without optional JSRs, permissions, vendor APIs, or a required icon
-- Touch via standard `Canvas.pointerPressed`, `pointerDragged`, `pointerReleased`.
+The existing `j2me_devspace-demo` is the only example project installed
+by workspace setup/update. Its original LCDUI form, text inputs, gauges,
+choices, scrolling and commands remain intact.
 
-## New workspace
+- Compile with ECJ `-source 1.3 -target cldc1.1` for class-file **45.3**
+  and the CLDC `StackMap` verifier attribute.
+- Link against CLDC 1.1 and MIDP 2.0 API references. Java ME API stubs,
+  ECJ, and a host JDK are build-time tools, not files to place in the JAR.
+- The profile declares CLDC 1.1 / MIDP 2.0 as a compatible minimum; V10C
+  firmware appears to provide a newer MIDP implementation.
+- Correct missing icon reference to `/icons/icon.png`; no HTTP permission.
+- Validate ZIP, manifest, referenced MIDlet class/icon, all class versions,
+  JAD jar filename and jar size.
+- For GS290 touch-enabled profiles, include stock LG JAD/manifest fields:
+  `MIDlet-Touch-Support: true`, `LGE-MIDlet-Width: 240`, and
+  `LGE-MIDlet-Height: 400`. These were found in V10C factory JADs.
+  This does not add an independent touch demonstration to the workspace.
 
-Build/install CLI from this branch using the root README (CMake), then:
+## Windows setup
 
-```powershell
-j2me --workspace setup 'I:\J2ME-Workspace'
-Set-Location 'I:\J2ME-Workspace'
-j2me --build gs290-touch-test --profile lg-gs290
-```
-
-Python 3 (on PATH) and a Java launcher (JDK 8+) are required.
-First use downloads the following *build-only* JARs from Maven Central:
-ECJ 3.26.0, MicroEmulator CLDC 1.1 API stubs 2.0.4, and MIDP 2.0 API stubs 2.0.4.
-These are **not** packaged into the MIDlet and are **not** run on the phone.
-ECJ SHA-256 and MIDP API SHA-256 are pinned in the source code.
-
-Generated files:
-
-```
-projects/gs290-touch-test/dist/GS290TouchTest.jar
-projects/gs290-touch-test/dist/GS290TouchTest.jad
-```
-
-Install via the device's supported JAD/JAR file installation method. Copy
-both files together; keep the JAD's `MIDlet-Jar-URL` pointing to the JAR.
-Use the **new** JAR; do not test the previous Java 8 one.
-
-Expected screen: black background, white text ("Hello, LG World!") plus touch
-capability, screen size and pointer coordinates. No permissions requested.
-Canvas `getWidth()/getHeight()` report available Java viewport, which may be
-smaller than the panel's physical 240x400 due to softkeys.
-
-## Existing workspace
+Rebuild the C++ CLI after merging, then from an existing workspace:
 
 ```powershell
-# Rebuild the updated CLI and run:
-j2me --workspace update 'I:\J2ME-Workspace'
-Set-Location 'I:\J2ME-Workspace'
-j2me --build gs290-touch-test --profile lg-gs290
+j2me --workspace update "I:\J2ME-Workspace"
+Set-Location "I:\J2ME-Workspace"
+j2me --build j2me_devspace-demo --profile lg-gs290
 ```
 
-The update adds `tools/phonebuild` and `projects/gs290-touch-test` if missing.
-It **does not overwrite existing projects or profiles**. Historical
-`lg-gs290` profiles are intentionally routed to the new CLDC builder.
-Historical `/icons/icon32.png` in the demo is corrected at packaging time
-only if `/icons/icon.png` actually exists.
+The build requires Python 3 and a Java launcher (host JDK 8+) and downloads
+ECJ 3.26.0, CLDC API references and MIDP API references from Maven Central
+into `sdk/phonebuild/`. The compiler and MIDP API dependencies have pinned
+SHA-256 checks. No APIs are bundled into the installed JAR.
 
-For manual invocation:
+Files:
+```text
+projects/j2me_devspace-demo/dist/j2me_devspace-demo.jar
+projects/j2me_devspace-demo/dist/j2me_devspace-demo.jad
+```
+
+To inspect the resulting package:
 
 ```powershell
-python .\tools\phonebuild\main.py --workspace . --project .\projects\gs290-touch-test
-python .\tools\phonebuild\main.py --inspect-jar .\projects\gs290-touch-test\dist\GS290TouchTest.jar
+python .\tools\phonebuild\main.py --inspect-jar .\projects\j2me_devspace-demo\dist\j2me_devspace-demo.jar
 ```
 
-`--inspect-jar` checks the JAR manifest, referenced entry class/icon and all
-class-file versions; **45.3** is required. CI performs a real compile and
-uploads JAR+JAD artifacts.
+If the phone rejects a new MIDlet, compare its JAD and JAR against
+known-working packages from the same handset. Do not change firmware for
+a toolchain problem.
 
-## Troubleshooting "Not supported" on V10k
-
-1. Inspect both old and new JAR. If the old one reports 52.0,
-   the prior compiler was wrong.
-2. Install the tiny touch-test MIDlet, **without** optional permissions and
-   without proprietary LG libraries. If it works, the AROMA VM basic loader,
-   CLDC verification, MIDP Canvas and touch events can be investigated separately.
-3. If it fails, report the exact UI message and installation method and compare
-   `META-INF/MANIFEST.MF`, JAD values, class versions and signer permissions
-   against a working on-device JAR. Do not reflash firmware to solve a build issue.
-4. The archived LG SDK may provide additional LG-specific UI libraries, but it
-   cannot be treated as an exact GS290 profile unless device compatibility is
-   verified.
-
-The V10C factory DFAT JAD files for `M002` (Brain Challenge 2) and `M005` (Ferrari GT)
-contain `MIDlet-Touch-Support: true` plus `LGE-MIDlet-Width: 240` and
-`LGE-MIDlet-Height: 400`. Phonebuild adds these vendor fields to both JAR
-manifest and JAD when the target profile has `touch: true`. Fullscreen-only
-`MIDxlet-FullScreen: TRUE` is intentionally not enabled in the initial smoke test.
-
-No JAR downloaded from the LG SDK archive was used in these changes; its
-directory URL could not be retrieved during this audit.
+This patch does not include or merge the independent GS290 touch-test
+application; that app remains experimental.

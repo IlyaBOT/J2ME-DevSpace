@@ -423,22 +423,20 @@ Project code is licensed under Apache License 2.0. See `LICENSE`.
 
 ## LG GS290 real-device builds (CLDC 45.3)
 
-Older revisions used Ant `javac source=8 target=8`, which produces Java SE 8
-bytecode (52.0) and may silently omit CLDC preverification. That JAR can
-install on the phone but fail with **Not supported** on startup.
+Older releases used Ant `javac source=8 target=8` (Java 8 bytecode 52.0)
+and could copy unpreverified classes into handset JARs. The default demo also
+referenced an icon path that did not exist.
 
-This branch introduces `phonebuild` using Eclipse ECJ `-target cldc1.1`
-(45.3 + StackMap) and a minimal 240x400 touch MIDlet. Its JAR/JAD metadata
-includes LG touch descriptors recovered from the V10C factory firmware.
-
-After rebuilding this CLI:
+This version routes the `lg-gs290` device profile through Eclipse ECJ for
+CLDC class-file **45.3** and `StackMap` attributes, builds standard MIDP 2.0
+with optional LG touchscreen manifest keys, validates MIDlet class and icons,
+and generates a matching JAR+JAD. The workspace's default rich-form demo is
+preserved, with the corrected icon and no unnecessary HTTP permission.
 
 ```powershell
 j2me --workspace update 'I:\J2ME-Workspace'
-j2me --build gs290-touch-test --profile lg-gs290
+j2me --build j2me_devspace-demo --profile lg-gs290
 ```
 
-Build-time dependencies are downloaded on demand into the workspace; they are
-not bundled into the installed MIDlet. The build fails rather than silently
-emitting Java 8 class files. See [full GS290 instructions](docs/LG_GS290_PHONE_BUILD.md)
-and the [phone-ready JAR/JAD GitHub Actions artifact](.github/workflows/gs290-phonebuild.yml).
+This change **does not add a separate touchscreen test project** to the
+workspace. See [LG GS290 build instructions](docs/LG_GS290_PHONE_BUILD.md).

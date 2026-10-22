@@ -1,17 +1,15 @@
-name: GS290 CLDC Touch Test
+name: GS290 CLDC DevSpace Demo
 on:
   push:
-    branches:
-      - main
-      - fix/lg-gs290-cldc-touch-toolchain-20261022
+    branches: [main, fix/lg-gs290-cldc-touch-toolchain-20261022]
     paths:
       - 'templates/tools/phonebuild/**'
-      - 'templates/project/app/gs290-touch-test/**'
+      - 'templates/project/app/demo/**'
       - '.github/workflows/gs290-phonebuild.yml'
   pull_request:
     paths:
       - 'templates/tools/phonebuild/**'
-      - 'templates/project/app/gs290-touch-test/**'
+      - 'templates/project/app/demo/**'
       - '.github/workflows/gs290-phonebuild.yml'
   workflow_dispatch:
 
@@ -27,35 +25,20 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Compile preverified CLDC 45.3 MIDlet
-        run: |
-          python3 templates/tools/phonebuild/main.py \
-            --workspace "$GITHUB_WORKSPACE" \
-            --project templates/project/app/gs290-touch-test
-      - name: Inspect real phone JAR
-        run: |
-          python3 templates/tools/phonebuild/main.py \
-            --inspect-jar templates/project/app/gs290-touch-test/dist/GS290TouchTest.jar
-      - name: Compile historical DevSpace demo against CLDC
+      - name: Compile DevSpace demo for CLDC 1.1
         run: |
           python3 templates/tools/phonebuild/main.py \
             --workspace "$GITHUB_WORKSPACE" \
             --project templates/project/app/demo
+      - name: Validate Java 45.3 and MIDlet class
+        run: |
           python3 templates/tools/phonebuild/main.py \
             --inspect-jar templates/project/app/demo/dist/j2me_devspace-demo.jar
-      - name: Upload legacy demo for comparison
+      - name: Upload DevSpace demo JAR/JAD
         uses: actions/upload-artifact@v4
         with:
-          name: GS290LegacyDemo-phone-ready
+          name: GS290DevSpaceDemo-phone-ready
           path: |
             templates/project/app/demo/dist/j2me_devspace-demo.jar
             templates/project/app/demo/dist/j2me_devspace-demo.jad
-          if-no-files-found: error
-      - name: Upload JAR and JAD for device testing
-        uses: actions/upload-artifact@v4
-        with:
-          name: GS290TouchTest-phone-ready
-          path: |
-            templates/project/app/gs290-touch-test/dist/GS290TouchTest.jar
-            templates/project/app/gs290-touch-test/dist/GS290TouchTest.jad
           if-no-files-found: error
