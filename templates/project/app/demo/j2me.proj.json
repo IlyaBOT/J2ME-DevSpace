@@ -6,9 +6,7 @@
   "version": "0.1.0",
   "vendor": "IlyaBOT",
   "jar_name": "j2me_devspace-demo.jar",
-  "icon": "/icons/icon32.png",
-  "permissions": [
-    "javax.microedition.io.Connector.http"
-  ],
+  "icon": "/icons/icon.png",
+  "permissions": [],
   "default_profile": "lg-gs290"
 }

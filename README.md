@@ -420,3 +420,23 @@ MIDlets can read descriptor/manifest properties with `getAppProperty("J2ME-Build
 ## License
 
 Project code is licensed under Apache License 2.0. See `LICENSE`.
+
+## LG GS290 real-device builds (CLDC 45.3)
+
+Older releases used Ant `javac source=8 target=8` (Java 8 bytecode 52.0)
+and could copy unpreverified classes into handset JARs. The default demo also
+referenced an icon path that did not exist.
+
+This version routes the `lg-gs290` device profile through Eclipse ECJ for
+CLDC class-file **45.3** and `StackMap` attributes, builds standard MIDP 2.0
+with optional LG touchscreen manifest keys, validates MIDlet class and icons,
+and generates a matching JAR+JAD. The workspace's default rich-form demo is
+preserved, with the corrected icon and no unnecessary HTTP permission.
+
+```powershell
+j2me --workspace update 'I:\J2ME-Workspace'
+j2me --build j2me_devspace-demo --profile lg-gs290
+```
+
+This change **does not add a separate touchscreen test project** to the
+workspace. See [LG GS290 build instructions](docs/LG_GS290_PHONE_BUILD.md).

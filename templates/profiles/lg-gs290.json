@@ -5,10 +5,12 @@
   "screen_width": 240,
   "screen_height": 400,
   "touch": true,
-  "midp": "2.1",
+  "midp": "2.0",
   "cldc": "1.1",
   "heap_mb": 4,
   "jar_size_limit_kb": 1024,
   "emulator": "freej2me-plus",
-  "wtk_device": "DefaultColorPhone"
+  "wtk_device": "DefaultColorPhone",
+  "runtime_midp": "2.1",
+  "build_backend": "ecj-cldc"
 }
