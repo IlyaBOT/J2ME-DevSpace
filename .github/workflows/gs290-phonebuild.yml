@@ -36,6 +36,21 @@ jobs:
         run: |
           python3 templates/tools/phonebuild/main.py \
             --inspect-jar templates/project/app/gs290-touch-test/dist/GS290TouchTest.jar
+      - name: Compile historical DevSpace demo against CLDC
+        run: |
+          python3 templates/tools/phonebuild/main.py \
+            --workspace "$GITHUB_WORKSPACE" \
+            --project templates/project/app/demo
+          python3 templates/tools/phonebuild/main.py \
+            --inspect-jar templates/project/app/demo/dist/j2me_devspace-demo.jar
+      - name: Upload legacy demo for comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: GS290LegacyDemo-phone-ready
+          path: |
+            templates/project/app/demo/dist/j2me_devspace-demo.jar
+            templates/project/app/demo/dist/j2me_devspace-demo.jad
+          if-no-files-found: error
       - name: Upload JAR and JAD for device testing
         uses: actions/upload-artifact@v4
         with:
