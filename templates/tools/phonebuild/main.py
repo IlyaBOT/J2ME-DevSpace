@@ -86,16 +86,21 @@ def txt(value, label):
         die("Descriptor field too long: " + label)
     return s
 
-def descriptor(data):
+def descriptor(data, manifest=False):
     lines = []
     for key, value in data:
         key = txt(key, key)
         value = txt(value, key)
         line = key + ": " + value
-        if len(line.encode("ascii")) > 70:
-            die("Descriptor line exceeds conservative 70-byte limit: " + key)
+        if manifest:
+            # Manifest spec: wrap lines at 72 bytes; continuation begins
+            # with one space. ASCII metadata means chars == encoded bytes.
+            while len(line) > 70:
+                lines.append(line[:70])
+                line = " " + line[70:]
         lines.append(line)
-    return ("\r\n".join(lines) + "\r\n").encode("ascii")
+    return ("\r\n".join(lines) + ("\r\n\r\n" if manifest else "\r\n")).encode("ascii")
+
 
 def class_versions(jar):
     classes = []
@@ -260,7 +265,7 @@ def build(project, workspace, java_path, cache, profile_path):
     dist.mkdir(exist_ok=True)
     jar = dist / jar_name
     with zipfile.ZipFile(jar, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-        z.writestr("META-INF/MANIFEST.MF", descriptor(entries))
+        z.writestr("META-INF/MANIFEST.MF", descriptor(entries, manifest=True))
         for klass_file in class_files:
             z.write(klass_file, klass_file.relative_to(out).as_posix())
         if res.is_dir():
