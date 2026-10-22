@@ -27,6 +27,9 @@ DEPENDENCIES = {
     "midpapi20.jar": (
         "org/microemu/midpapi20/2.0.4/midpapi20-2.0.4.jar",
         "b7f6ed5e0344c7000643ecc114e6edff3587e8e77face546af0e12ffd6dbe826"),
+    # Optional JSR-75 file API reference classes. Never bundled in device JAR.
+    "jsr75-file.jar": (
+        "org/microemu/microemu-jsr-75/2.0.4/microemu-jsr-75-2.0.4.jar", None),
 }
 
 def die(message):
@@ -83,16 +86,21 @@ def txt(value, label):
         die("Descriptor field too long: " + label)
     return s
 
-def descriptor(data):
+def descriptor(data, manifest=False):
     lines = []
     for key, value in data:
         key = txt(key, key)
         value = txt(value, key)
         line = key + ": " + value
-        if len(line.encode("ascii")) > 70:
-            die("Descriptor line exceeds conservative 70-byte limit: " + key)
+        if manifest:
+            # Manifest spec: wrap lines at 72 bytes; continuation begins
+            # with one space. ASCII metadata means chars == encoded bytes.
+            while len(line) > 70:
+                lines.append(line[:70])
+                line = " " + line[70:]
         lines.append(line)
-    return ("\r\n".join(lines) + "\r\n").encode("ascii")
+    return ("\r\n".join(lines) + ("\r\n\r\n" if manifest else "\r\n")).encode("ascii")
+
 
 def class_versions(jar):
     classes = []
@@ -171,15 +179,23 @@ def build(project, workspace, java_path, cache, profile_path):
     if not sources:
         die("No Java source files found")
     java = find_java(workspace, java_path)
-    sdk = {key: acquire(key, cache) for key in DEPENDENCIES}
+    optional_apis = proj.get("optional_apis", [])
+    if not isinstance(optional_apis, list) or any(api != "jsr75-file" for api in optional_apis):
+        die("optional_apis must be an array containing only supported jsr75-file")
+    deps = ("ecj.jar", "cldcapi11.jar", "midpapi20.jar")
+    if "jsr75-file" in optional_apis:
+        deps += ("jsr75-file.jar",)
+    sdk = {key: acquire(key, cache) for key in deps}
     out = project / "build" / "phone-cldc-classes"
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
+    api_classpath = [str(sdk["cldcapi11.jar"]), str(sdk["midpapi20.jar"])]
+    if "jsr75-file" in optional_apis:
+        api_classpath.append(str(sdk["jsr75-file.jar"]))
     cmd = [java, "-jar", str(sdk["ecj.jar"]),
            "-source", "1.3", "-target", "cldc1.1", "-g:none", "-encoding", "UTF-8",
-           "-bootclasspath", os.pathsep.join((str(sdk["cldcapi11.jar"]),
-                                             str(sdk["midpapi20.jar"]))),
+           "-bootclasspath", os.pathsep.join(api_classpath),
            "-d", str(out)] + [str(p) for p in sources]
     print("[ECJ] compiling", len(sources), "files for CLDC-1.1 / MIDP-2.0")
     rc = subprocess.call(cmd)
@@ -227,6 +243,12 @@ def build(project, workspace, java_path, cache, profile_path):
     ]
     if permissions:
         entries.append(("MIDlet-Permissions", ", ".join(map(str, permissions))))
+    optional_permissions = proj.get("optional_permissions", [])
+    if not isinstance(optional_permissions, list):
+        die("optional_permissions must be an array")
+    if optional_permissions:
+        entries.append(("MIDlet-Permissions-Opt", ", ".join(
+            txt(permission, "optional permission") for permission in optional_permissions)))
     if icon:
         entries.append(("MIDlet-Icon", "/" + icon))
     if profile.get("touch") is True:
@@ -243,7 +265,7 @@ def build(project, workspace, java_path, cache, profile_path):
     dist.mkdir(exist_ok=True)
     jar = dist / jar_name
     with zipfile.ZipFile(jar, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-        z.writestr("META-INF/MANIFEST.MF", descriptor(entries))
+        z.writestr("META-INF/MANIFEST.MF", descriptor(entries, manifest=True))
         for klass_file in class_files:
             z.write(klass_file, klass_file.relative_to(out).as_posix())
         if res.is_dir():
