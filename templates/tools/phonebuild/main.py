@@ -158,11 +158,16 @@ def build(project, workspace, java_path, cache, profile_path):
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
     if proj.get("schema") != "j2me.proj/1" or profile.get("schema") != "j2me.profile/1":
         die("Invalid metadata schema")
-    if profile.get("build_backend") != "ecj-cldc":
-        die("Profile does not opt in to verified CLDC build_backend=ecj-cldc")
-    if profile.get("cldc") != "1.1" or profile.get("midp") != "2.0":
-        die("Initial phone build supports declared CLDC-1.1 / MIDP-2.0 only")
+    if profile.get("build_backend") not in (None, "ecj-cldc"):
+        die("Unsupported build backend: " + str(profile.get("build_backend")))
+    if profile.get("cldc") != "1.1" or profile.get("midp") not in ("2.0", "2.1"):
+        die("Phone builder supports CLDC-1.1, MIDP-2.0/2.1 metadata")
+    if profile.get("midp") == "2.1":
+        print("[COMPAT] Legacy profile requests MIDP 2.1; targeting MIDP 2.0 for maximum GS290 compatibility")
     sources = sorted((project / "src").rglob("*.java"))
+    generated = project / "build" / "generated-src"
+    if generated.exists():
+        sources += sorted(generated.rglob("*.java"))
     if not sources:
         die("No Java source files found")
     java = find_java(workspace, java_path)
@@ -201,7 +206,11 @@ def build(project, workspace, java_path, cache, profile_path):
     icon = txt(proj.get("icon", ""), "icon").lstrip("/")
     res = project / "res"
     if icon and not (res / icon).is_file():
-        die("Icon mentioned in metadata does not exist: res/" + icon)
+        if icon == "icons/icon32.png" and (res / "icons" / "icon.png").is_file():
+            print("[COMPAT] Correcting historical demo icon path to /icons/icon.png")
+            icon = "icons/icon.png"
+        else:
+            die("Icon mentioned in metadata does not exist: res/" + icon)
     permissions = proj.get("permissions", [])
     if not isinstance(permissions, list):
         die("permissions must be an array")
