@@ -2073,7 +2073,7 @@ static int buildProject(const fs::path &ws, const AppMeta &meta, const std::stri
 
     // Real handsets need CLDC 45.3 bytecode and StackMap attributes.
     // The legacy Ant fallback emits Java SE 8 bytecode and is emulator-only.
-    if (jstr(*profStrict, "build_backend") == "ecj-cldc") {
+    if (jstr(*profStrict, "build_backend") == "ecj-cldc" || profileName == "lg-gs290") {
         fs::path script = ws / "tools" / "phonebuild" / "main.py";
         if (!fs::exists(script)) {
             std::cerr << "Missing phonebuild tool. Run: j2me --workspace update\n";
