@@ -229,6 +229,16 @@ def build(project, workspace, java_path, cache, profile_path):
         entries.append(("MIDlet-Permissions", ", ".join(map(str, permissions))))
     if icon:
         entries.append(("MIDlet-Icon", "/" + icon))
+    if profile.get("touch") is True:
+        # Vendor descriptors confirmed in stock LG GS290 V10C Java game JAD files.
+        w, h = int(profile.get("screen_width", 240)), int(profile.get("screen_height", 400))
+        if not (100 <= w <= 1024 and 100 <= h <= 1024):
+            die("Unreasonable touchscreen dimensions in profile")
+        entries.extend([
+            ("MIDlet-Touch-Support", "true"),
+            ("LGE-MIDlet-Width", str(w)),
+            ("LGE-MIDlet-Height", str(h)),
+        ])
     dist = project / "dist"
     dist.mkdir(exist_ok=True)
     jar = dist / jar_name
