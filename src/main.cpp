@@ -1199,8 +1199,8 @@ static json defaultProjectJson(const std::string &name, const std::string &defau
         {"version", "0.1.0"},
         {"vendor", "IlyaBOT"},
         {"jar_name", name + ".jar"},
-        {"icon", "/icons/icon32.png"},
-        {"permissions", json::array({"javax.microedition.io.Connector.http"})},
+        {"icon", ""},
+        {"permissions", json::array()},
         {"default_profile", defaultProfile}
     };
 }
@@ -1213,8 +1213,10 @@ static json defaultProfileJson() {
         {"screen_width", 240},
         {"screen_height", 400},
         {"touch", true},
-        {"midp", "2.1"},
+        {"midp", "2.0"},
+        {"runtime_midp", "2.1"},
         {"cldc", "1.1"},
+        {"build_backend", "ecj-cldc"},
         {"heap_mb", 4},
         {"jar_size_limit_kb", 1024},
         {"emulator", "freej2me-plus"},
@@ -1317,6 +1319,10 @@ static int workspaceSetup(const fs::path &toolHome, const AppMeta &meta, const f
     if (!fs::exists(demoProject)) {
         copyTemplateDirIfExists(toolHome / "templates" / "project" / "app" / "demo", demoProject);
     }
+    fs::path gs290TouchProject = target / "projects" / "gs290-touch-test";
+    if (!fs::exists(gs290TouchProject)) {
+        copyTemplateDirIfExists(toolHome / "templates" / "project" / "app" / "gs290-touch-test", gs290TouchProject);
+    }
     if (fs::exists(toolHome / "templates" / "README.workspace.md")) {
         fs::copy_file(toolHome / "templates" / "README.workspace.md", target / "README.workspace.md", fs::copy_options::overwrite_existing);
     }
@@ -1362,6 +1368,10 @@ static int workspaceUpdate(const fs::path &toolHome, const AppMeta &meta, const 
     fs::path demoProject = target / "projects" / "j2me_devspace-demo";
     if (!fs::exists(demoProject)) {
         copyTemplateDirIfExists(toolHome / "templates" / "project" / "app" / "demo", demoProject);
+    }
+    fs::path gs290TouchProject = target / "projects" / "gs290-touch-test";
+    if (!fs::exists(gs290TouchProject)) {
+        copyTemplateDirIfExists(toolHome / "templates" / "project" / "app" / "gs290-touch-test", gs290TouchProject);
     }
     if (fs::exists(toolHome / "templates" / "README.workspace.md")) {
         fs::copy_file(toolHome / "templates" / "README.workspace.md", target / "README.workspace.md", fs::copy_options::overwrite_existing);
@@ -2061,6 +2071,42 @@ static int buildProject(const fs::path &ws, const AppMeta &meta, const std::stri
         return 2;
     }
 
+    // Real handsets need CLDC 45.3 bytecode and StackMap attributes.
+    // The legacy Ant fallback emits Java SE 8 bytecode and is emulator-only.
+    if (jstr(*profStrict, "build_backend") == "ecj-cldc") {
+        fs::path script = ws / "tools" / "phonebuild" / "main.py";
+        if (!fs::exists(script)) {
+            std::cerr << "Missing phonebuild tool. Run: j2me --workspace update\n";
+            return 2;
+        }
+#ifdef _WIN32
+        std::string command = "python ";
+#else
+        std::string command = "python3 ";
+#endif
+        command += shellQuote(script)
+            + " --workspace " + shellQuote(ws)
+            + " --project " + shellQuote(p)
+            + " --profile " + shellQuote(p / ("j2me.profile-" + profileName + ".json"));
+        if (!jdkArg.empty()) {
+            fs::path javaHome = resolveJavaHome(ws / "sdk" / "jdk" / jdkArg);
+            if (javaHome.empty()) {
+                std::cerr << "Selected JDK not found: " << jdkArg << "\n";
+                return 2;
+            }
+#ifdef _WIN32
+            command += " --java " + shellQuote(javaHome / "bin" / "java.exe");
+#else
+            command += " --java " + shellQuote(javaHome / "bin" / "java");
+#endif
+        }
+        int rc = runCommand(command);
+        if (rc != 0) return rc;
+        if (runAfter) return runProject(ws, name, profileName);
+        return 0;
+    }
+    std::cout << "Warning: legacy Ant backend is not certified for real CLDC phones; "
+                 "use an ecj-cldc profile for phone-ready JAR/JAD.\n";
     std::string buildDate = nowIsoLocal();
     fs::create_directories(p / "build" / "generated");
     fs::create_directories(p / "build" / "generated-src");
