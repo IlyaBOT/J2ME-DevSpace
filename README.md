@@ -420,3 +420,25 @@ MIDlets can read descriptor/manifest properties with `getAppProperty("J2ME-Build
 ## License
 
 Project code is licensed under Apache License 2.0. See `LICENSE`.
+
+## LG GS290 real-device builds (CLDC 45.3)
+
+Older revisions used Ant `javac source=8 target=8`, which produces Java SE 8
+bytecode (52.0) and may silently omit CLDC preverification. That JAR can
+install on the phone but fail with **Not supported** on startup.
+
+This branch introduces `phonebuild` using Eclipse ECJ `-target cldc1.1`
+(45.3 + StackMap) and a minimal 240x400 touch MIDlet. Its JAR/JAD metadata
+includes LG touch descriptors recovered from the V10C factory firmware.
+
+After rebuilding this CLI:
+
+```powershell
+j2me --workspace update 'I:\J2ME-Workspace'
+j2me --build gs290-touch-test --profile lg-gs290
+```
+
+Build-time dependencies are downloaded on demand into the workspace; they are
+not bundled into the installed MIDlet. The build fails rather than silently
+emitting Java 8 class files. See [full GS290 instructions](docs/LG_GS290_PHONE_BUILD.md)
+and the [phone-ready JAR/JAD GitHub Actions artifact](.github/workflows/gs290-phonebuild.yml).
