@@ -1,0 +1,5 @@
+schema: j2me.tool/1
+name: phonebuild
+version: "1.0"
+description: CLDC 1.1 / MIDP 2.0 device-safe JAR+JAD build and inspection (ECJ 45.3)
+entrypoint: main.py
